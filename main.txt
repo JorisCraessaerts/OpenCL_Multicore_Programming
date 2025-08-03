@@ -157,70 +157,6 @@ def count_cells(mask_matrix):
     return (cell_count, cell_numbers)
 
 
-def count_cells_flood_fill(mask_matrix):
-    """Find and count the number of cells in the mask matrix using a flood
-    fill algorithm.
-
-    This is a simpler algorithm than the union find algorithm above, and will
-    typcially be faster in a sequential execution. However, it is not as easy
-    to parallelize on a GPU, because it requires either a queue or recursion.
-    """
-    height, width = mask_matrix.shape
-
-    # The cell number for each pixel. -1 means the pixel is not part of a cell.
-    # Initialize with all -1.
-    cell_numbers = np.full((height, width), -1, dtype=np.int32)
-
-    # The next cell number to use
-    cell_index = 0
-
-    def flood_fill(row, col, cell_number):
-        """Fill a cell using a flood fill algorithm."""
-        queue = [(row, col)]
-        while len(queue) > 0:
-            row, col = queue.pop(0)
-
-            if row < 0 or row >= height:
-                continue
-            if col < 0 or col >= width:
-                continue
-            if mask_matrix[row, col] == -1:
-                # Background pixel: skip
-                continue
-            if cell_numbers[row, col] != -1:
-                # Already visited by a previous flood fill
-                continue
-
-            cell_numbers[row, col] = cell_number
-
-            for dr, dc in [
-                (-1, -1),
-                (-1, 0),
-                (-1, 1),
-                (0, -1),
-                # skip self
-                (0, 1),
-                (1, -1),
-                (1, 0),
-                (1, 1),
-            ]:
-                queue.append((row + dr, col + dc))
-
-    # Iterate over all pixels, and fill each cell using a flood fill.
-    for row in range(height):
-        for col in range(width):
-            if mask_matrix[row, col] == -1:
-                continue
-
-            if cell_numbers[row, col] != -1:
-                # Already part of a cell: skip
-                continue
-            # Not part of a cell yet: fill this cell
-            flood_fill(row, col, cell_index)
-            cell_index += 1
-
-    return (cell_index, cell_numbers)
-
 
 def highlight_cells(cell_numbers):
     """Generate an image with the cells highlighted.
@@ -324,6 +260,7 @@ def main():
         # Display results
         print(f"Cell count: {cell_count}")
         print(f"Execution time: {end_time - start_time:.4f}s")
+
 
 if __name__ == "__main__":
     main()
