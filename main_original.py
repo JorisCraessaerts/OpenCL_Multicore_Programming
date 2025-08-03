@@ -1,9 +1,6 @@
 import time
 from PIL import Image
 import numpy as np
-import pyopencl as cl
-import os
-
 
 # A pixel is part of a cell if its brightness is lower than THRESHOLD.
 THRESHOLD = 200
@@ -51,54 +48,18 @@ def image_to_mask_matrix(image):
     - Pixels that are part of a cell are set to a unique number. This number is
       the 'global index' of the pixel, i.e. `row * width + col`.
     """
-    height, width, channels = image.shape  # channels is 3 for RGB images
+    height, width, _channels = image.shape  # channels is 3 for RGB images
+    mask_matrix = np.zeros((height, width), dtype=np.int32)
 
-    assert channels in [3, 4], "Image must have 3 (RGB) or 4 (RGBA) channels."
+    for row in range(height):  # row = y
+        for col in range(width):  # col = x
+            pixel = image[row, col]
+            if is_part_of_cell(pixel):
+                mask_matrix[row, col] = row * width + col
+            else:
+                mask_matrix[row, col] = -1
 
-    # Voeg alpha toe als die ontbreekt (nodig voor uchar4)
-    if channels == 3:
-        alpha = np.full((height, width, 1), 255, dtype=np.uint8)
-        image = np.concatenate((image, alpha), axis=2)
-
-    # mask_matrix = np.zeros((height, width), dtype=np.int32)
-    img_flat = image.reshape((height * width, 4))
-
-    platforms = cl.get_platforms()
-    platform = platforms[0]
-    devices = platform.get_devices(device_type=cl.device_type.GPU)
-    device = devices[0]
-
-    context = cl.Context(devices=[device],
-                         properties=[(cl.context_properties.PLATFORM, platform)])
-    queue = cl.CommandQueue(context)
-
-    # Buffers
-    mf = cl.mem_flags
-    img_buf = cl.Buffer(context, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=img_flat)
-    mask_buf = cl.Buffer(context, mf.WRITE_ONLY, size=img_flat.shape[0] * 4)
-
-    # Kernel inladen
-    with open(os.path.join("kernels", "threshold_mask.cl")) as f:
-        kernel_src = f.read()
-
-    program = cl.Program(context, kernel_src).build()
-    kernel = program.threshold_mask
-
-    # Kernel argumenten instellen (zoals in cursus slide 40)
-    kernel.set_args(img_buf, mask_buf,
-                    np.int32(width), np.int32(height), np.int32(THRESHOLD))
-
-    # Workgroup size: voor nu gebruiken we None (automatisch), zie hieronder
-    global_size = (width, height)
-    local_size = None  # dit mag later geoptimaliseerd worden
-
-    cl.enqueue_nd_range_kernel(queue, kernel, global_size, local_size)
-    queue.finish()
-
-    # Copy resultaat terug
-    result = np.empty((height * width,), dtype=np.int32)
-    cl.enqueue_copy(queue, result, mask_buf)
-    return result.reshape((height, width))
+    return mask_matrix
 
 
 def count_cells(mask_matrix):
@@ -316,60 +277,6 @@ def matrix_to_svg(matrix, filename):
                 f.write(f'<text x="{col}.5" y="{row}.5">{matrix[row, col]}</text>\n')
         f.write("</svg>\n")
 
-def round_up(x, base=16):
-    return ((x + base - 1) // base) * base
-
-
-def run_union_find_tiled(mask_matrix):
-    height, width = mask_matrix.shape
-    size = height * width
-
-    BLOCK_SIZE = 16
-    global_size = (round_up(width, BLOCK_SIZE), round_up(height, BLOCK_SIZE))
-    local_size = (BLOCK_SIZE, BLOCK_SIZE)
-
-    # OpenCL setup (zoals in cursus)
-    platforms = cl.get_platforms()
-    platform = platforms[0]
-    devices = platform.get_devices(device_type=cl.device_type.GPU)
-    device = devices[0]
-
-    ctx = cl.Context([device])
-    queue = cl.CommandQueue(ctx)
-
-    # Buffers
-    parent = np.arange(size, dtype=np.int32)
-    mask = mask_matrix.flatten().astype(np.int32)
-    changed = np.array([1], dtype=np.int32)
-
-    mf = cl.mem_flags
-    parent_buf = cl.Buffer(ctx, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=parent)
-    mask_buf = cl.Buffer(ctx, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=mask)
-    changed_buf = cl.Buffer(ctx, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=changed)
-
-    # Kernel
-    with open(os.path.join("kernels", "union_find_tiled.cl")) as f:
-        kernel_src = f.read()
-
-    program = cl.Program(ctx, kernel_src).build()
-    kernel = program.union_find_tiled
-
-    # Iteratief uitvoeren tot geen wijzigingen meer gebeuren
-    while changed[0]:
-        changed[0] = 0
-        cl.enqueue_copy(queue, changed_buf, changed)
-
-        kernel.set_args(parent_buf, mask_buf, changed_buf,
-                        np.int32(width), np.int32(height))
-
-        cl.enqueue_nd_range_kernel(queue, kernel, global_size, local_size)
-        queue.finish()
-
-        cl.enqueue_copy(queue, changed, changed_buf)
-
-    cl.enqueue_copy(queue, parent, parent_buf)
-    return parent.reshape((height, width))
-
 
 def main():
     print(f"Threshold: {THRESHOLD}")
@@ -401,16 +308,7 @@ def main():
         # matrix_to_svg(mask_matrix, f"{image_name}.mask.svg")
 
         # 2. Count the number of cells in the image
-        parent = run_union_find_tiled(mask_matrix)
-        cell_numbers = np.full_like(parent, -1)
-
-        # Elke pixel krijgt zijn root toegewezen als cell-ID
-        for row in range(parent.shape[0]):
-            for col in range(parent.shape[1]):
-                if mask_matrix[row, col] != -1:
-                    cell_numbers[row, col] = parent[row, col]
-
-        cell_count = len(np.unique(cell_numbers)) - 1
+        (cell_count, cell_numbers) = count_cells(mask_matrix)
         # matrix_to_svg(cell_numbers, f"{image_name}.result.svg")
         # (cell_count, cell_numbers) = count_cells_flood_fill(mask_matrix)
 
@@ -426,6 +324,7 @@ def main():
         # Display results
         print(f"Cell count: {cell_count}")
         print(f"Execution time: {end_time - start_time:.4f}s")
+
 
 if __name__ == "__main__":
     main()
