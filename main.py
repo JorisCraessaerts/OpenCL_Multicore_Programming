@@ -1,6 +1,9 @@
 import time
 from PIL import Image
 import numpy as np
+import pyopencl as cl
+import os
+
 
 # A pixel is part of a cell if its brightness is lower than THRESHOLD.
 THRESHOLD = 200
@@ -48,18 +51,54 @@ def image_to_mask_matrix(image):
     - Pixels that are part of a cell are set to a unique number. This number is
       the 'global index' of the pixel, i.e. `row * width + col`.
     """
-    height, width, _channels = image.shape  # channels is 3 for RGB images
-    mask_matrix = np.zeros((height, width), dtype=np.int32)
+    height, width, channels = image.shape  # channels is 3 for RGB images
 
-    for row in range(height):  # row = y
-        for col in range(width):  # col = x
-            pixel = image[row, col]
-            if is_part_of_cell(pixel):
-                mask_matrix[row, col] = row * width + col
-            else:
-                mask_matrix[row, col] = -1
+    assert channels in [3, 4], "Image must have 3 (RGB) or 4 (RGBA) channels."
 
-    return mask_matrix
+    # Voeg alpha toe als die ontbreekt (nodig voor uchar4)
+    if channels == 3:
+        alpha = np.full((height, width, 1), 255, dtype=np.uint8)
+        image = np.concatenate((image, alpha), axis=2)
+
+    # mask_matrix = np.zeros((height, width), dtype=np.int32)
+    img_flat = image.reshape((height * width, 4))
+
+    platforms = cl.get_platforms()
+    platform = platforms[0]
+    devices = platform.get_devices(device_type=cl.device_type.GPU)
+    device = devices[0]
+
+    context = cl.Context(devices=[device],
+                         properties=[(cl.context_properties.PLATFORM, platform)])
+    queue = cl.CommandQueue(context)
+
+    # Buffers
+    mf = cl.mem_flags
+    img_buf = cl.Buffer(context, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=img_flat)
+    mask_buf = cl.Buffer(context, mf.WRITE_ONLY, size=img_flat.shape[0] * 4)
+
+    # Kernel inladen
+    with open(os.path.join("kernels", "threshold_mask.cl")) as f:
+        kernel_src = f.read()
+
+    program = cl.Program(context, kernel_src).build()
+    kernel = program.threshold_mask
+
+    # Kernel argumenten instellen (zoals in cursus slide 40)
+    kernel.set_args(img_buf, mask_buf,
+                    np.int32(width), np.int32(height), np.int32(THRESHOLD))
+
+    # Workgroup size: voor nu gebruiken we None (automatisch), zie hieronder
+    global_size = (width, height)
+    local_size = None  # dit mag later geoptimaliseerd worden
+
+    cl.enqueue_nd_range_kernel(queue, kernel, global_size, local_size)
+    queue.finish()
+
+    # Copy resultaat terug
+    result = np.empty((height * width,), dtype=np.int32)
+    cl.enqueue_copy(queue, result, mask_buf)
+    return result.reshape((height, width))
 
 
 def count_cells(mask_matrix):
