@@ -1,9 +1,6 @@
 import time
 from PIL import Image
 import numpy as np
-import pyopencl as cl
-import os
-
 
 # A pixel is part of a cell if its brightness is lower than THRESHOLD.
 THRESHOLD = 200
@@ -46,99 +43,23 @@ def is_part_of_cell(pixel):
 
 
 def image_to_mask_matrix(image):
-    height, width, channels = image.shape
-    assert channels in [3, 4], "Image must have 3 (RGB) or 4 (RGBA) channels."
-    if channels == 3:
-        alpha = np.full((height, width, 1), 255, dtype=np.uint8)
-        image = np.concatenate((image, alpha), axis=2)
+    """Convert an image to a "mask matrix". In this matrix:
+    - Pixels that are not part of a cell (= "background pixels") are set to -1.
+    - Pixels that are part of a cell are set to a unique number. This number is
+      the 'global index' of the pixel, i.e. `row * width + col`.
+    """
+    height, width, _channels = image.shape  # channels is 3 for RGB images
+    mask_matrix = np.zeros((height, width), dtype=np.int32)
 
-    img_flat = image.reshape((-1, 4))
-    num_pixels = width * height
-    TILE_SIZE = 16
-    THRESHOLD = 200
+    for row in range(height):  # row = y
+        for col in range(width):  # col = x
+            pixel = image[row, col]
+            if is_part_of_cell(pixel):
+                mask_matrix[row, col] = row * width + col
+            else:
+                mask_matrix[row, col] = -1
 
-    # OpenCL setup
-    platform = cl.get_platforms()[0]
-    device = platform.get_devices(cl.device_type.GPU)[0]
-    context = cl.Context([device])
-    queue = cl.CommandQueue(context, properties=cl.command_queue_properties.PROFILING_ENABLE)
-    mf = cl.mem_flags
-
-    # Buffers
-    img_buf     = cl.Buffer(context, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=img_flat)
-    mask_buf    = cl.Buffer(context, mf.READ_WRITE, size=4 * num_pixels)
-    parent_buf  = cl.Buffer(context, mf.READ_WRITE, size=4 * num_pixels)
-    rank_buf    = cl.Buffer(context, mf.READ_WRITE, size=4 * num_pixels)
-    label_buf   = cl.Buffer(context, mf.WRITE_ONLY, size=4 * num_pixels)
-    changes_buf = cl.Buffer(context, mf.READ_WRITE, size=4)
-
-    def build_kernel(fname):
-        with open(os.path.join("kernels", fname)) as f:
-            return cl.Program(context, f.read()).build()
-
-    # -------- KERNEL 1: threshold_mask --------
-    build_kernel("threshold_mask.cl").threshold_mask(
-        queue, (width, height), None,
-        img_buf, mask_buf, np.int32(width), np.int32(height), np.int32(THRESHOLD)
-    )
-
-    # -------- KERNEL 2: initialize_union --------
-    build_kernel("initialize_union_data.cl").initialize_union(
-        queue, (num_pixels,), None,
-        mask_buf, parent_buf, rank_buf, np.int32(num_pixels)
-    )
-
-    # -------- ITERATIEVE UNION --------
-    while True:
-        cl.enqueue_copy(queue, changes_buf, np.zeros(1, dtype=np.int32))
-
-        build_kernel("union_within_tile.cl").union_within_tile(
-            queue, (width, height), None,
-            mask_buf, parent_buf, np.int32(width), np.int32(height),
-            np.int32(TILE_SIZE), changes_buf
-        )
-
-        build_kernel("union_vertical_borders.cl").union_vertical_borders(
-            queue, (width,), None,
-            mask_buf, parent_buf, np.int32(width), np.int32(height),
-            np.int32(TILE_SIZE), changes_buf
-        )
-
-        build_kernel("union_horizontal_borders.cl").union_horizontal_borders(
-            queue, (height,), None,
-            mask_buf, parent_buf, np.int32(width), np.int32(height),
-            np.int32(TILE_SIZE), changes_buf
-        )
-
-        build_kernel("union_diagonal_borders.cl").union_diagonal_borders(
-            queue, (width, height), None,
-            mask_buf, parent_buf, np.int32(width), np.int32(height),
-            np.int32(TILE_SIZE), changes_buf
-        )
-
-        host_changes = np.zeros(1, dtype=np.int32)
-        cl.enqueue_copy(queue, host_changes, changes_buf)
-        queue.finish()
-        if host_changes[0] == 0:
-            break
-
-    # -------- KERNEL 6: flatten_roots --------
-    build_kernel("flatten_roots.cl").flatten_roots(
-        queue, (num_pixels,), None,
-        parent_buf, label_buf, np.int32(num_pixels)
-    )
-
-    # Kopieer naar host
-    label_host = np.empty(num_pixels, dtype=np.int32)
-    cl.enqueue_copy(queue, label_host, label_buf)
-    label_matrix = label_host.reshape((height, width))
-
-    return label_matrix, context, queue
-
-
-
-
-
+    return mask_matrix
 
 
 def count_cells(mask_matrix):
@@ -367,23 +288,40 @@ def main():
 
         # Load image
         img = load_image(image_path)
+
+        # Convert image to numpy array
         img_arr = np.asarray(img).astype(np.uint8)
         print(f"Image size: {img_arr.shape}, {img_arr.size} pixels")
+        # Note: PIL uses (x, y) coordinates, while numpy uses (row, col)
+        # coordinates. Hence, the width and height are swapped!
+        # print(f"Image shape: {img.size}")
+        # print(f"Image array size: {img_arr.shape}")
+
+        # For OpenCL, you can flatten the image to a 1D array using
+        # img_arr.flatten()
 
         start_time = time.perf_counter()
 
-        # Verwerk image
-        label_matrix, context, queue = image_to_mask_matrix(img_arr)
+        # 1. Convert the image to a "mask matrix", where True indicates the
+        # pixel is part of a cell.
+        mask_matrix = image_to_mask_matrix(img_arr)
+        # matrix_to_svg(mask_matrix, f"{image_name}.mask.svg")
 
-        # Aantal unieke componenten tellen
-        unique_labels = np.unique(label_matrix[label_matrix != -1])
-        cell_count = len(unique_labels)
-
-        # Voor visualisatie
-        cell_image = highlight_cells(label_matrix)
-        Image.fromarray(cell_image).save(f"{image_name}.result.png")
+        # 2. Count the number of cells in the image
+        (cell_count, cell_numbers) = count_cells(mask_matrix)
+        # matrix_to_svg(cell_numbers, f"{image_name}.result.svg")
+        # (cell_count, cell_numbers) = count_cells_flood_fill(mask_matrix)
 
         end_time = time.perf_counter()
+
+        # Generate image with the cells highlighted, using different colors.
+        # This might be useful for debugging.
+        cell_image = highlight_cells(cell_numbers)
+        Image.fromarray(cell_image).save(f"{image_name}.result.png")
+        # Note: even though the input is JPG, it is better to save the output
+        # as PNG, to avoid compression artifacts.
+
+        # Display results
         print(f"Cell count: {cell_count}")
         print(f"Execution time: {end_time - start_time:.4f}s")
 
