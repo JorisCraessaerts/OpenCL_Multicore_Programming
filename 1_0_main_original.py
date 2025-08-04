@@ -1,6 +1,8 @@
 import time
 from PIL import Image
 import numpy as np
+import os
+
 
 # A pixel is part of a cell if its brightness is lower than THRESHOLD.
 THRESHOLD = 200
@@ -283,47 +285,52 @@ def main():
 
     for image_path in IMAGES:
         image_name = image_path.rsplit("/", maxsplit=1)[-1].split(".")[0]
-        print()
-        print(f"Image: {image_name} ({image_path})")
+        output_file = f"1_0_image_{image_name}.txt"
+        with open(output_file, "w") as f_out:
+            for run in range(15):
+                print()
+                print(f"Image: {image_name} ({image_path})")
 
-        # Load image
-        img = load_image(image_path)
+                # Load image
+                img = load_image(image_path)
 
-        # Convert image to numpy array
-        img_arr = np.asarray(img).astype(np.uint8)
-        print(f"Image size: {img_arr.shape}, {img_arr.size} pixels")
-        # Note: PIL uses (x, y) coordinates, while numpy uses (row, col)
-        # coordinates. Hence, the width and height are swapped!
-        # print(f"Image shape: {img.size}")
-        # print(f"Image array size: {img_arr.shape}")
+                # Convert image to numpy array
+                img_arr = np.asarray(img).astype(np.uint8)
+                print(f"Image size: {img_arr.shape}, {img_arr.size} pixels")
+                # Note: PIL uses (x, y) coordinates, while numpy uses (row, col)
+                # coordinates. Hence, the width and height are swapped!
+                # print(f"Image shape: {img.size}")
+                # print(f"Image array size: {img_arr.shape}")
 
-        # For OpenCL, you can flatten the image to a 1D array using
-        # img_arr.flatten()
+                # For OpenCL, you can flatten the image to a 1D array using
+                # img_arr.flatten()
 
-        start_time = time.perf_counter()
+                start_time = time.perf_counter()
 
-        # 1. Convert the image to a "mask matrix", where True indicates the
-        # pixel is part of a cell.
-        mask_matrix = image_to_mask_matrix(img_arr)
-        # matrix_to_svg(mask_matrix, f"{image_name}.mask.svg")
+                # 1. Convert the image to a "mask matrix", where True indicates the
+                # pixel is part of a cell.
+                mask_matrix = image_to_mask_matrix(img_arr)
+                # matrix_to_svg(mask_matrix, f"{image_name}.mask.svg")
 
-        # 2. Count the number of cells in the image
-        (cell_count, cell_numbers) = count_cells(mask_matrix)
-        # matrix_to_svg(cell_numbers, f"{image_name}.result.svg")
-        # (cell_count, cell_numbers) = count_cells_flood_fill(mask_matrix)
+                # 2. Count the number of cells in the image
+                (cell_count, cell_numbers) = count_cells(mask_matrix)
+                # matrix_to_svg(cell_numbers, f"{image_name}.result.svg")
+                # (cell_count, cell_numbers) = count_cells_flood_fill(mask_matrix)
 
-        end_time = time.perf_counter()
+                end_time = time.perf_counter()
 
-        # Generate image with the cells highlighted, using different colors.
-        # This might be useful for debugging.
-        cell_image = highlight_cells(cell_numbers)
-        Image.fromarray(cell_image).save(f"{image_name}.result.png")
-        # Note: even though the input is JPG, it is better to save the output
-        # as PNG, to avoid compression artifacts.
+                # Generate image with the cells highlighted, using different colors.
+                # This might be useful for debugging.
+                # cell_image = highlight_cells(cell_numbers)
+                # Image.fromarray(cell_image).save(f"{image_name}.result.png")
+                # Note: even though the input is JPG, it is better to save the output
+                # as PNG, to avoid compression artifacts.
 
-        # Display results
-        print(f"Cell count: {cell_count}")
-        print(f"Execution time: {end_time - start_time:.4f}s")
+                # Display results
+                print(f"Cell count: {cell_count}")
+                elapsed = end_time - start_time
+                f_out.writelines(f"{elapsed:.4f}\n")
+                print(f"Execution time: {end_time - start_time:.4f}s")
 
 
 if __name__ == "__main__":

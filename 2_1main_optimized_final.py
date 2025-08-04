@@ -1,5 +1,6 @@
 import time
 from PIL import Image
+import argparse
 import numpy as np
 import pyopencl as cl
 import os
@@ -45,8 +46,9 @@ def is_part_of_cell(pixel):
     return pixel_brightness(pixel) < THRESHOLD
 
 
-def union_find_tiled(image):
+def union_find_tiled(image, tile_size):    
     height, width, channels = image.shape
+
     assert channels in [3, 4], "Image must have 3 (RGB) or 4 (RGBA) channels."
     if channels == 3:
         alpha = np.full((height, width, 1), 255, dtype=np.uint8)
@@ -54,12 +56,12 @@ def union_find_tiled(image):
 
     img_flat = image.reshape((-1, 4))
     num_pixels = width * height
-    TILE_SIZE = 16
     THRESHOLD = 200
 
     # OpenCL setup
     platform = cl.get_platforms()[0]
     device = platform.get_devices(cl.device_type.GPU)[0]
+
     context = cl.Context([device])
     queue = cl.CommandQueue(context, properties=cl.command_queue_properties.PROFILING_ENABLE)
     mf = cl.mem_flags
@@ -100,25 +102,25 @@ def union_find_tiled(image):
         kernel_union_within_tile.union_within_tile(
             queue, (width, height), None,
             mask_buf, parent_buf, np.int32(width), np.int32(height),
-            np.int32(TILE_SIZE), changes_buf
+            np.int32(tile_size), changes_buf
         )
 
         kernel_union_vertical.union_vertical_borders(
             queue, (width,), None,
             mask_buf, parent_buf, np.int32(width), np.int32(height),
-            np.int32(TILE_SIZE), changes_buf
+            np.int32(tile_size), changes_buf
         )
 
         kernel_union_horizontal.union_horizontal_borders(
             queue, (height,), None,
             mask_buf, parent_buf, np.int32(width), np.int32(height),
-            np.int32(TILE_SIZE), changes_buf
+            np.int32(tile_size), changes_buf
         )
 
         kernel_union_diagonal.union_diagonal_borders(
             queue, (width, height), None,
             mask_buf, parent_buf, np.int32(width), np.int32(height),
-            np.int32(TILE_SIZE), changes_buf
+            np.int32(tile_size), changes_buf
         )
 
         host_changes = np.zeros(1, dtype=np.int32)
@@ -196,36 +198,79 @@ def matrix_to_svg(matrix, filename):
                 f.write(f'<text x="{col}.5" y="{row}.5">{matrix[row, col]}</text>\n')
         f.write("</svg>\n")
 
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--runs", type=int, default=1, help="Aantal benchmark runs")
+    parser.add_argument("--tilesize", type=int, default=16, help="Tile size (optioneel)")
+    parser.add_argument("--workgroupsize", type=str, help="bv. 16x16 (optioneel)")
+    parser.add_argument("--output", type=str, required=True, help="Output bestand om runtimes te loggen")
+    return parser.parse_args()
+
+def parse_workgroup_size(s):
+    if s is None:
+        return None
+    parts = s.lower().split("x")
+    return tuple(int(p) for p in parts)
+
 
 def main():
-    print(f"Threshold: {THRESHOLD}")
+    # #dragonfly_cores = 16384;
+    # #personalpc_cores = 2176;
 
-    for image_path in IMAGES:
-        image_name = image_path.rsplit("/", maxsplit=1)[-1].split(".")[0]
-        print()
-        print(f"Image: {image_name} ({image_path})")
+    # dragonfly_workgroupsizes = [(64, 64), (64, 128), (128, 128),(128,256), (256, 256), (256, 512), (512, 512)]
+    # personalpc_workgroupsizes = [(32, 32), (64, 64), (128, 64)]
 
-        # Load image
-        img = load_image(image_path)
-        img_arr = np.asarray(img).astype(np.uint8)
-        print(f"Image size: {img_arr.shape}, {img_arr.size} pixels")
 
-        start_time = time.perf_counter()
+    # ideal_workgroupsize_personalpc = (128, 64)
+    # ideal_workgroupsize_dragonfly = (256, 256)
 
-        # Verwerk image
-        label_matrix, context, queue = union_find_tiled(img_arr)
+    # ideal_workgroupsize = ideal_workgroupsize_personalpc
+ 
+    # workgroupsizes = personalpc_workgroupsizes
 
-        # Aantal unieke componenten tellen
-        unique_labels = np.unique(label_matrix[label_matrix != -1])
-        cell_count = len(unique_labels)
+    # testcases = [
+    #     ((32, 32), (256,)),
+    #     ((64, 64), (512,)),
+    #     ((128, 64), (1024,))
+    # ]
 
-        # Voor visualisatie
-        cell_image = highlight_cells(label_matrix)
-        Image.fromarray(cell_image).save(f"{image_name}.result.png")
+    for tile_size in [4, 8, 16, 32, 64, 128]:
+        print(f"Threshold: {THRESHOLD}")
 
-        end_time = time.perf_counter()
-        print(f"Cell count: {cell_count}")
-        print(f"Execution time: {end_time - start_time:.4f}s")
+        for image_path in IMAGES:
+            image_name = image_path.rsplit("/", maxsplit=1)[-1].split(".")[0]
+            output_file = f"2_1_{image_name}_tilsize_{tile_size}_.txt"
+            with open(output_file, "w") as f_out:
+                runs = range(30)
+                for run in runs:
+                    print()
+                    print(f"Image: {image_name} ({image_path})")
+
+                    # Load image
+                    img = load_image(image_path)
+                    img_arr = np.asarray(img).astype(np.uint8)
+                    print(f"Image size: {img_arr.shape}, {img_arr.size} pixels")
+
+                    start_time = time.perf_counter()
+
+                    # Verwerk image
+                    label_matrix, context, queue = union_find_tiled(img_arr, tile_size)
+
+                    # Aantal unieke componenten tellen
+                    unique_labels = np.unique(label_matrix[label_matrix != -1])
+                    cell_count = len(unique_labels)
+
+                    # Voor visualisatie
+                    # cell_image = highlight_cells(label_matrix)
+                    # Image.fromarray(cell_image).save(f"{image_name}.result.png")
+
+                    end_time = time.perf_counter()
+                    elapsed = end_time - start_time
+                    print(f"Cell count: {cell_count}")
+                    print(f"Execution time: {elapsed:.4f}s")
+
+                    f_out.writelines(f"{elapsed:.4f}\n")
+                    print(f"Run {run+1}/{runs}: {elapsed:.4f}s")
 
 
 if __name__ == "__main__":
