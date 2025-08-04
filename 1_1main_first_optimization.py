@@ -1,22 +1,25 @@
 import time
 from PIL import Image
 import numpy as np
+import pyopencl as cl
+import os
+
 
 # A pixel is part of a cell if its brightness is lower than THRESHOLD.
 THRESHOLD = 200
 
 IMAGES = [
-    # "./images/Anisocytose_plaquettaire.jpg",
-    # "./images/Eosinophil_blood_smear.jpg",
-    # "./images/Neutrophils_monocyte_16694967012.jpg",
-    # "./images/Patology_of_platelet.jpg",
-    # "./images/Plaquettes_normales.jpg",
-    # "./images/Plaquette_geante.jpg",
-    # "./images/Platelets2.jpg",
-    # "./images/RBCs_Platelets_WBC_in_PBS_2.jpg",
-    # "./images/Thrombocytes.jpg",
-    # "./images/Thrombocytosis.jpg",
-    "./images/tiny-example.bmp",  # Used in the assignment
+    "./images/Anisocytose_plaquettaire.jpg",
+    "./images/Eosinophil_blood_smear.jpg",
+    "./images/Neutrophils_monocyte_16694967012.jpg",
+    "./images/Patology_of_platelet.jpg",
+    "./images/Plaquettes_normales.jpg",
+    "./images/Plaquette_geante.jpg",
+    "./images/Platelets2.jpg",
+    "./images/RBCs_Platelets_WBC_in_PBS_2.jpg",
+    "./images/Thrombocytes.jpg",
+    "./images/Thrombocytosis.jpg",
+    # "./images/tiny-example.bmp",  # Used in the assignment
 ]
 
 
@@ -48,18 +51,54 @@ def image_to_mask_matrix(image):
     - Pixels that are part of a cell are set to a unique number. This number is
       the 'global index' of the pixel, i.e. `row * width + col`.
     """
-    height, width, _channels = image.shape  # channels is 3 for RGB images
-    mask_matrix = np.zeros((height, width), dtype=np.int32)
+    height, width, channels = image.shape  # channels is 3 for RGB images
 
-    for row in range(height):  # row = y
-        for col in range(width):  # col = x
-            pixel = image[row, col]
-            if is_part_of_cell(pixel):
-                mask_matrix[row, col] = row * width + col
-            else:
-                mask_matrix[row, col] = -1
+    assert channels in [3, 4], "Image must have 3 (RGB) or 4 (RGBA) channels."
 
-    return mask_matrix
+    # Voeg alpha toe als die ontbreekt (nodig voor uchar4)
+    if channels == 3:
+        alpha = np.full((height, width, 1), 255, dtype=np.uint8)
+        image = np.concatenate((image, alpha), axis=2)
+
+    # mask_matrix = np.zeros((height, width), dtype=np.int32)
+    img_flat = image.reshape((height * width, 4))
+
+    platforms = cl.get_platforms()
+    platform = platforms[0]
+    devices = platform.get_devices(device_type=cl.device_type.GPU)
+    device = devices[0]
+
+    context = cl.Context(devices=[device],
+                         properties=[(cl.context_properties.PLATFORM, platform)])
+    queue = cl.CommandQueue(context)
+
+    # Buffers
+    mf = cl.mem_flags
+    img_buf = cl.Buffer(context, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=img_flat)
+    mask_buf = cl.Buffer(context, mf.WRITE_ONLY, size=img_flat.shape[0] * 4)
+
+    # Kernel inladen
+    with open(os.path.join("kernels", "threshold_mask.cl")) as f:
+        kernel_src = f.read()
+
+    program = cl.Program(context, kernel_src).build()
+    kernel = program.threshold_mask
+
+    # Kernel argumenten instellen (zoals in cursus slide 40)
+    kernel.set_args(img_buf, mask_buf,
+                    np.int32(width), np.int32(height), np.int32(THRESHOLD))
+
+    # Workgroup size: voor nu gebruiken we None (automatisch), zie hieronder
+    global_size = (width, height)
+    local_size = None  # dit mag later geoptimaliseerd worden
+
+    cl.enqueue_nd_range_kernel(queue, kernel, global_size, local_size)
+    queue.finish()
+
+    # Copy resultaat terug
+    result = np.empty((height * width,), dtype=np.int32)
+    cl.enqueue_copy(queue, result, mask_buf)
+    return result.reshape((height, width))
 
 
 def count_cells(mask_matrix):
@@ -155,71 +194,6 @@ def count_cells(mask_matrix):
     # Return the number of cells, as well as the 'image' of cell numbers.
     # The cell numbers can be used for debugging.
     return (cell_count, cell_numbers)
-
-
-def count_cells_flood_fill(mask_matrix):
-    """Find and count the number of cells in the mask matrix using a flood
-    fill algorithm.
-
-    This is a simpler algorithm than the union find algorithm above, and will
-    typcially be faster in a sequential execution. However, it is not as easy
-    to parallelize on a GPU, because it requires either a queue or recursion.
-    """
-    height, width = mask_matrix.shape
-
-    # The cell number for each pixel. -1 means the pixel is not part of a cell.
-    # Initialize with all -1.
-    cell_numbers = np.full((height, width), -1, dtype=np.int32)
-
-    # The next cell number to use
-    cell_index = 0
-
-    def flood_fill(row, col, cell_number):
-        """Fill a cell using a flood fill algorithm."""
-        queue = [(row, col)]
-        while len(queue) > 0:
-            row, col = queue.pop(0)
-
-            if row < 0 or row >= height:
-                continue
-            if col < 0 or col >= width:
-                continue
-            if mask_matrix[row, col] == -1:
-                # Background pixel: skip
-                continue
-            if cell_numbers[row, col] != -1:
-                # Already visited by a previous flood fill
-                continue
-
-            cell_numbers[row, col] = cell_number
-
-            for dr, dc in [
-                (-1, -1),
-                (-1, 0),
-                (-1, 1),
-                (0, -1),
-                # skip self
-                (0, 1),
-                (1, -1),
-                (1, 0),
-                (1, 1),
-            ]:
-                queue.append((row + dr, col + dc))
-
-    # Iterate over all pixels, and fill each cell using a flood fill.
-    for row in range(height):
-        for col in range(width):
-            if mask_matrix[row, col] == -1:
-                continue
-
-            if cell_numbers[row, col] != -1:
-                # Already part of a cell: skip
-                continue
-            # Not part of a cell yet: fill this cell
-            flood_fill(row, col, cell_index)
-            cell_index += 1
-
-    return (cell_index, cell_numbers)
 
 
 def highlight_cells(cell_numbers):
@@ -324,7 +298,6 @@ def main():
         # Display results
         print(f"Cell count: {cell_count}")
         print(f"Execution time: {end_time - start_time:.4f}s")
-
 
 if __name__ == "__main__":
     main()

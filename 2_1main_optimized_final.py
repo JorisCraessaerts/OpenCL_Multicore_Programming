@@ -9,16 +9,16 @@ import os
 THRESHOLD = 200
 
 IMAGES = [
-    # "./images/Anisocytose_plaquettaire.jpg",
-    # "./images/Eosinophil_blood_smear.jpg",
-    # "./images/Neutrophils_monocyte_16694967012.jpg",
-    # "./images/Patology_of_platelet.jpg",
-    # "./images/Plaquettes_normales.jpg",
-    # "./images/Plaquette_geante.jpg",
-    # "./images/Platelets2.jpg",
-    # "./images/RBCs_Platelets_WBC_in_PBS_2.jpg",
-    # "./images/Thrombocytes.jpg",
-    # "./images/Thrombocytosis.jpg",
+    "./images/Anisocytose_plaquettaire.jpg",
+    "./images/Eosinophil_blood_smear.jpg",
+    "./images/Neutrophils_monocyte_16694967012.jpg",
+    "./images/Patology_of_platelet.jpg",
+    "./images/Plaquettes_normales.jpg",
+    "./images/Plaquette_geante.jpg",
+    "./images/Platelets2.jpg",
+    "./images/RBCs_Platelets_WBC_in_PBS_2.jpg",
+    "./images/Thrombocytes.jpg",
+    "./images/Thrombocytosis.jpg",
     "./images/tiny-example.bmp",  # Used in the assignment
 ]
 
@@ -45,7 +45,7 @@ def is_part_of_cell(pixel):
     return pixel_brightness(pixel) < THRESHOLD
 
 
-def image_to_mask_matrix(image):
+def union_find_tiled(image):
     height, width, channels = image.shape
     assert channels in [3, 4], "Image must have 3 (RGB) or 4 (RGBA) channels."
     if channels == 3:
@@ -137,170 +137,6 @@ def image_to_mask_matrix(image):
 
 
 
-
-
-
-
-def count_cells(mask_matrix):
-    """Find and count the number of cells in the mask matrix.
-    This returns the number of cells, as well as an 'image' of cell numbers."""
-    height, width = mask_matrix.shape
-
-    # The maximum number of cells we could ever have is the number of pixels.
-    max_cells = height * width
-
-    # The algorithm we use is called "union find" or "union by rank". You can
-    # read more about it at
-    # https://en.wikipedia.org/wiki/Disjoint-set_data_structure
-
-    # The parent array keeps track of the parent of each pixel. If a pixel is
-    # its own parent, it is a "root pixel".
-    # Note: np.arange(n) creates an array [0, 1, 2, ..., n], so each pixel
-    # starts as a root pixel.
-    parent = np.arange(max_cells, dtype=np.int32)
-    # Rank per pixel, initialized to 0.
-    rank = np.zeros(max_cells, dtype=np.int32)
-
-    def find(x):
-        """Find the root of a pixel."""
-        if parent[x] != x:  # Is this a root pixel?
-            # No: continue up the tree
-            parent[x] = find(parent[x])
-        return parent[x]
-
-    def union(x, y):
-        """Merge two pixels and their cells."""
-        # Find the root of each pixel
-        rootX = find(x)
-        rootY = find(y)
-
-        if rootX != rootY:
-            # If the roots are different, merge the cells
-            if rank[rootX] > rank[rootY]:
-                # X has a higher rank: make Y a child of X
-                parent[rootY] = rootX
-            elif rank[rootX] < rank[rootY]:
-                # Y has a higher rank: make X a child of Y
-                parent[rootX] = rootY
-            else:
-                # Both have the same rank: make one a child of the other and
-                # increase the rank of the new parent.
-                parent[rootY] = rootX
-                rank[rootX] += 1
-
-    # Iterate over all pixels, and merge neighboring pixels into the same cell.
-    for row in range(height):
-        for col in range(width):
-            if mask_matrix[row, col] == -1:
-                # Background pixel: skip
-                continue
-
-            # Check if the neighbors are part of a cell, and merge with these.
-            # Note: we only need to check the previous (top-left, top,
-            # top-right, and left) neighbors; the later ones (right,
-            # bottom-left, bottom, bottom-right) will check this pixel in their
-            # iteration.
-            for dr, dc in [(-1, -1), (-1, 0), (-1, 1), (0, -1)]:
-                r = row + dr
-                c = col + dc
-
-                # Skip if the neighbor is out of bounds, or a background pixel
-                if r < 0 or r >= height:
-                    continue
-                if c < 0 or c >= width:
-                    continue
-                if mask_matrix[r, c] == -1:
-                    continue
-
-                # Merge the two pixels' cells
-                union(mask_matrix[row, col], mask_matrix[r, c])
-
-    # Create an array to store the cell numbers
-    # Note that cell numbers are not necessarily contiguous.
-    cell_numbers = np.zeros((height, width), dtype=np.int32)
-
-    # Update the cell numbers with the root numbers
-    for row in range(height):
-        for col in range(width):
-            if mask_matrix[row, col] == -1:
-                cell_numbers[row, col] = -1
-            else:
-                cell_numbers[row, col] = find(mask_matrix[row, col])
-
-    # Count the number of cells
-    # Subtract 1 to ignore the background value
-    cell_count = len(np.unique(cell_numbers)) - 1
-
-    # Return the number of cells, as well as the 'image' of cell numbers.
-    # The cell numbers can be used for debugging.
-    return (cell_count, cell_numbers)
-
-
-def count_cells_flood_fill(mask_matrix):
-    """Find and count the number of cells in the mask matrix using a flood
-    fill algorithm.
-
-    This is a simpler algorithm than the union find algorithm above, and will
-    typcially be faster in a sequential execution. However, it is not as easy
-    to parallelize on a GPU, because it requires either a queue or recursion.
-    """
-    height, width = mask_matrix.shape
-
-    # The cell number for each pixel. -1 means the pixel is not part of a cell.
-    # Initialize with all -1.
-    cell_numbers = np.full((height, width), -1, dtype=np.int32)
-
-    # The next cell number to use
-    cell_index = 0
-
-    def flood_fill(row, col, cell_number):
-        """Fill a cell using a flood fill algorithm."""
-        queue = [(row, col)]
-        while len(queue) > 0:
-            row, col = queue.pop(0)
-
-            if row < 0 or row >= height:
-                continue
-            if col < 0 or col >= width:
-                continue
-            if mask_matrix[row, col] == -1:
-                # Background pixel: skip
-                continue
-            if cell_numbers[row, col] != -1:
-                # Already visited by a previous flood fill
-                continue
-
-            cell_numbers[row, col] = cell_number
-
-            for dr, dc in [
-                (-1, -1),
-                (-1, 0),
-                (-1, 1),
-                (0, -1),
-                # skip self
-                (0, 1),
-                (1, -1),
-                (1, 0),
-                (1, 1),
-            ]:
-                queue.append((row + dr, col + dc))
-
-    # Iterate over all pixels, and fill each cell using a flood fill.
-    for row in range(height):
-        for col in range(width):
-            if mask_matrix[row, col] == -1:
-                continue
-
-            if cell_numbers[row, col] != -1:
-                # Already part of a cell: skip
-                continue
-            # Not part of a cell yet: fill this cell
-            flood_fill(row, col, cell_index)
-            cell_index += 1
-
-    return (cell_index, cell_numbers)
-
-
 def highlight_cells(cell_numbers):
     """Generate an image with the cells highlighted.
 
@@ -373,7 +209,7 @@ def main():
         start_time = time.perf_counter()
 
         # Verwerk image
-        label_matrix, context, queue = image_to_mask_matrix(img_arr)
+        label_matrix, context, queue = union_find_tiled(img_arr)
 
         # Aantal unieke componenten tellen
         unique_labels = np.unique(label_matrix[label_matrix != -1])
