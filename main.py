@@ -46,16 +46,13 @@ def is_part_of_cell(pixel):
 
 
 def image_to_mask_matrix(image):
-    """Convert an image to a "mask matrix". In this matrix:
-    - Pixels that are not part of a cell (= "background pixels") are set to -1.
-    - Pixels that are part of a cell are set to a unique number. This number is
-      the 'global index' of the pixel, i.e. `row * width + col`.
+    """Convert an image to a 'mask matrix'. In this matrix:
+    - Pixels that are not part of a cell are set to -1.
+    - Pixels that are part of a cell are set to a unique number (row * width + col).
     """
-    height, width, channels = image.shape  # channels is 3 for RGB images
-
+    height, width, channels = image.shape
     assert channels in [3, 4], "Image must have 3 (RGB) or 4 (RGBA) channels."
 
-    # Voeg alpha toe als die ontbreekt (nodig voor uchar4)
     if channels == 3:
         alpha = np.full((height, width, 1), 255, dtype=np.uint8)
         image = np.concatenate((image, alpha), axis=2)
@@ -66,71 +63,81 @@ def image_to_mask_matrix(image):
     # OpenCL setup
     platforms = cl.get_platforms()
     platform = platforms[0]
-    devices = platform.get_devices(device_type=cl.device_type.GPU)
-    device = devices[0]
+    device = platform.get_devices(device_type=cl.device_type.GPU)[0]
 
-    context = cl.Context(devices=[device],
-                         properties=[(cl.context_properties.PLATFORM, platform)])
+    context = cl.Context(devices=[device], properties=[(cl.context_properties.PLATFORM, platform)])
     queue = cl.CommandQueue(context, properties=cl.command_queue_properties.PROFILING_ENABLE)
 
     # Buffers
     mf = cl.mem_flags
-    img_buf = cl.Buffer(context, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=img_flat)
-    mask_buf = cl.Buffer(context, mf.READ_WRITE, size=img_flat.shape[0] * 4)
+    img_buf     = cl.Buffer(context, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=img_flat)
+    mask_buf    = cl.Buffer(context, mf.READ_WRITE, size=4 * num_pixels)
+    parent_buf  = cl.Buffer(context, mf.READ_WRITE, size=4 * num_pixels)
+    rank_buf    = cl.Buffer(context, mf.READ_WRITE, size=4 * num_pixels)
+    label_buf   = cl.Buffer(context, mf.WRITE_ONLY, size=4 * num_pixels)
 
-    # --------------------------
-    # KERNEL 1: threshold_mask
-    # --------------------------
+    # -------- KERNEL 1: threshold_mask --------
     with open(os.path.join("kernels", "threshold_mask.cl")) as f:
-        kernel_src = f.read()
-
-    program = cl.Program(context, kernel_src).build()
-    kernel = program.threshold_mask
-
-    kernel.set_args(img_buf, mask_buf, np.int32(width), np.int32(height), np.int32(THRESHOLD))
-
-    global_size = (width, height)
-    local_size = None
-
-    cl.enqueue_nd_range_kernel(queue, kernel, global_size, local_size)
+        src = f.read()
+    prog = cl.Program(context, src).build()
+    k = prog.threshold_mask
+    k.set_args(img_buf, mask_buf, np.int32(width), np.int32(height), np.int32(THRESHOLD))
+    cl.enqueue_nd_range_kernel(queue, k, (width, height), None)
     queue.finish()
 
-    # ------------------------------------
-    # KERNEL 2: initialize_union
-    # ------------------------------------
-    parent_buf = cl.Buffer(context, mf.READ_WRITE, size=4 * num_pixels)
-    rank_buf   = cl.Buffer(context, mf.READ_WRITE, size=4 * num_pixels)
-
+    # -------- KERNEL 2: initialize_union --------
     with open(os.path.join("kernels", "initialize_union_data.cl")) as f:
-        init_src = f.read()
-
-    program_init = cl.Program(context, init_src).build()
-    kernel_init = program_init.initialize_union
-
-    kernel_init.set_args(mask_buf, parent_buf, rank_buf, np.int32(num_pixels))
-
-    cl.enqueue_nd_range_kernel(queue, kernel_init, (num_pixels,), None)
+        src = f.read()
+    prog = cl.Program(context, src).build()
+    k = prog.initialize_union
+    k.set_args(mask_buf, parent_buf, rank_buf, np.int32(num_pixels))
+    cl.enqueue_nd_range_kernel(queue, k, (num_pixels,), None)
     queue.finish()
 
-    # Debug check (optioneel)
-    # parent_host = np.empty(num_pixels, dtype=np.int32)
-    # cl.enqueue_copy(queue, parent_host, parent_buf)
-    # print("Parent sample:", parent_host[:32])
+    # -------- KERNEL 3: union_within_tile --------
+    with open(os.path.join("kernels", "union_within_tile.cl")) as f:
+        src = f.read()
+    prog = cl.Program(context, src).build()
+    k = prog.union_within_tile
+    for _ in range(10):
+        k.set_args(mask_buf, parent_buf, np.int32(width), np.int32(height), np.int32(16))
+        cl.enqueue_nd_range_kernel(queue, k, (width, height), None)
+        queue.finish()
 
-    # Copy resultaat van mask terug
-    result = np.empty((height * width,), dtype=np.int32)
+    # -------- KERNEL 4: union_vertical_borders --------
+    with open(os.path.join("kernels", "union_vertical_borders.cl")) as f:
+        src = f.read()
+    prog = cl.Program(context, src).build()
+    k = prog.union_vertical_borders
+    k.set_args(mask_buf, parent_buf, np.int32(width), np.int32(height), np.int32(16))
+    cl.enqueue_nd_range_kernel(queue, k, (width,), None)
+    queue.finish()
+
+    # -------- KERNEL 5: union_horizontal_borders --------
+    with open(os.path.join("kernels", "union_horizontal_borders.cl")) as f:
+        src = f.read()
+    prog = cl.Program(context, src).build()
+    k = prog.union_horizontal_borders
+    k.set_args(mask_buf, parent_buf, np.int32(width), np.int32(height), np.int32(16))
+    cl.enqueue_nd_range_kernel(queue, k, (height,), None)
+    queue.finish()
+
+    # -------- KERNEL 6: flatten_roots --------
+    with open(os.path.join("kernels", "flatten_roots.cl")) as f:
+        src = f.read()
+    prog = cl.Program(context, src).build()
+    k = prog.flatten_roots
+    k.set_args(parent_buf, label_buf, np.int32(num_pixels))
+    cl.enqueue_nd_range_kernel(queue, k, (num_pixels,), None)
+    queue.finish()
+
+    # Result
+    result = np.empty(num_pixels, dtype=np.int32)
     cl.enqueue_copy(queue, result, mask_buf)
 
-    # Resultaten + buffers returnen
-    return result.reshape((height, width)), parent_buf, rank_buf, context, queue
+    return result.reshape((height, width)), label_buf, context, queue, width, height
 
 
-
-
-    # Copy resultaat terug
-    result = np.empty((height * width,), dtype=np.int32)
-    cl.enqueue_copy(queue, result, mask_buf)
-    return result.reshape((height, width))
 
 
 def count_cells(mask_matrix):
@@ -373,15 +380,20 @@ def main():
 
         start_time = time.perf_counter()
 
-        # 1. Convert the image to a "mask matrix", where True indicates the
-        # pixel is part of a cell.
-        mask_matrix, parent_buf, rank_buf, context, queue = image_to_mask_matrix(img_arr)
-        # matrix_to_svg(mask_matrix, f"{image_name}.mask.svg")
+        mask_matrix, label_buf, context, queue, width, height = image_to_mask_matrix(img_arr)
 
-        # 2. Count the number of cells in the image
-        (cell_count, cell_numbers) = count_cells(mask_matrix)
-        # matrix_to_svg(cell_numbers, f"{image_name}.result.svg")
-        # (cell_count, cell_numbers) = count_cells_flood_fill(mask_matrix)
+        # Label_buf naar host kopiëren
+        num_pixels = width * height
+        label_host = np.empty(num_pixels, dtype=np.int32)
+        cl.enqueue_copy(queue, label_host, label_buf)
+        label_matrix = label_host.reshape((height, width))
+
+        # Aantal unieke componenten tellen
+        unique_labels = np.unique(label_matrix[label_matrix != -1])
+        cell_count = len(unique_labels)
+
+        # Voor visualisatie: gebruik label_matrix als cell_numbers
+        cell_numbers = label_matrix
 
         end_time = time.perf_counter()
 
