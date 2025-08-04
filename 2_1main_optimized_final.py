@@ -88,29 +88,34 @@ def union_find_tiled(image):
         mask_buf, parent_buf, rank_buf, np.int32(num_pixels)
     )
 
+    kernel_union_within_tile = build_kernel("union_within_tile.cl")
+    kernel_union_vertical    = build_kernel("union_vertical_borders.cl")
+    kernel_union_horizontal  = build_kernel("union_horizontal_borders.cl")
+    kernel_union_diagonal    = build_kernel("union_diagonal_borders.cl")
+
     # -------- ITERATIEVE UNION --------
     while True:
         cl.enqueue_copy(queue, changes_buf, np.zeros(1, dtype=np.int32))
 
-        build_kernel("union_within_tile.cl").union_within_tile(
+        kernel_union_within_tile.union_within_tile(
             queue, (width, height), None,
             mask_buf, parent_buf, np.int32(width), np.int32(height),
             np.int32(TILE_SIZE), changes_buf
         )
 
-        build_kernel("union_vertical_borders.cl").union_vertical_borders(
+        kernel_union_vertical.union_vertical_borders(
             queue, (width,), None,
             mask_buf, parent_buf, np.int32(width), np.int32(height),
             np.int32(TILE_SIZE), changes_buf
         )
 
-        build_kernel("union_horizontal_borders.cl").union_horizontal_borders(
+        kernel_union_horizontal.union_horizontal_borders(
             queue, (height,), None,
             mask_buf, parent_buf, np.int32(width), np.int32(height),
             np.int32(TILE_SIZE), changes_buf
         )
 
-        build_kernel("union_diagonal_borders.cl").union_diagonal_borders(
+        kernel_union_diagonal.union_diagonal_borders(
             queue, (width, height), None,
             mask_buf, parent_buf, np.int32(width), np.int32(height),
             np.int32(TILE_SIZE), changes_buf
@@ -165,7 +170,6 @@ def highlight_cells(cell_numbers):
     for row in range(height):
         for col in range(width):
             result[row, col] = colors[cell_numbers[row, col]]
-
     return result
 
 
