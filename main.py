@@ -60,9 +60,10 @@ def image_to_mask_matrix(image):
         alpha = np.full((height, width, 1), 255, dtype=np.uint8)
         image = np.concatenate((image, alpha), axis=2)
 
-    # mask_matrix = np.zeros((height, width), dtype=np.int32)
     img_flat = image.reshape((height * width, 4))
+    num_pixels = width * height
 
+    # OpenCL setup
     platforms = cl.get_platforms()
     platform = platforms[0]
     devices = platform.get_devices(device_type=cl.device_type.GPU)
@@ -70,30 +71,61 @@ def image_to_mask_matrix(image):
 
     context = cl.Context(devices=[device],
                          properties=[(cl.context_properties.PLATFORM, platform)])
-    queue = cl.CommandQueue(context)
+    queue = cl.CommandQueue(context, properties=cl.command_queue_properties.PROFILING_ENABLE)
 
     # Buffers
     mf = cl.mem_flags
     img_buf = cl.Buffer(context, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=img_flat)
-    mask_buf = cl.Buffer(context, mf.WRITE_ONLY, size=img_flat.shape[0] * 4)
+    mask_buf = cl.Buffer(context, mf.READ_WRITE, size=img_flat.shape[0] * 4)
 
-    # Kernel inladen
+    # --------------------------
+    # KERNEL 1: threshold_mask
+    # --------------------------
     with open(os.path.join("kernels", "threshold_mask.cl")) as f:
         kernel_src = f.read()
 
     program = cl.Program(context, kernel_src).build()
     kernel = program.threshold_mask
 
-    # Kernel argumenten instellen (zoals in cursus slide 40)
-    kernel.set_args(img_buf, mask_buf,
-                    np.int32(width), np.int32(height), np.int32(THRESHOLD))
+    kernel.set_args(img_buf, mask_buf, np.int32(width), np.int32(height), np.int32(THRESHOLD))
 
-    # Workgroup size: voor nu gebruiken we None (automatisch), zie hieronder
     global_size = (width, height)
-    local_size = None  # dit mag later geoptimaliseerd worden
+    local_size = None
 
     cl.enqueue_nd_range_kernel(queue, kernel, global_size, local_size)
     queue.finish()
+
+    # ------------------------------------
+    # KERNEL 2: initialize_union
+    # ------------------------------------
+    parent_buf = cl.Buffer(context, mf.READ_WRITE, size=4 * num_pixels)
+    rank_buf   = cl.Buffer(context, mf.READ_WRITE, size=4 * num_pixels)
+
+    with open(os.path.join("kernels", "initialize_union_data.cl")) as f:
+        init_src = f.read()
+
+    program_init = cl.Program(context, init_src).build()
+    kernel_init = program_init.initialize_union
+
+    kernel_init.set_args(mask_buf, parent_buf, rank_buf, np.int32(num_pixels))
+
+    cl.enqueue_nd_range_kernel(queue, kernel_init, (num_pixels,), None)
+    queue.finish()
+
+    # Debug check (optioneel)
+    # parent_host = np.empty(num_pixels, dtype=np.int32)
+    # cl.enqueue_copy(queue, parent_host, parent_buf)
+    # print("Parent sample:", parent_host[:32])
+
+    # Copy resultaat van mask terug
+    result = np.empty((height * width,), dtype=np.int32)
+    cl.enqueue_copy(queue, result, mask_buf)
+
+    # Resultaten + buffers returnen
+    return result.reshape((height, width)), parent_buf, rank_buf, context, queue
+
+
+
 
     # Copy resultaat terug
     result = np.empty((height * width,), dtype=np.int32)
@@ -343,7 +375,7 @@ def main():
 
         # 1. Convert the image to a "mask matrix", where True indicates the
         # pixel is part of a cell.
-        mask_matrix = image_to_mask_matrix(img_arr)
+        mask_matrix, parent_buf, rank_buf, context, queue = image_to_mask_matrix(img_arr)
         # matrix_to_svg(mask_matrix, f"{image_name}.mask.svg")
 
         # 2. Count the number of cells in the image
