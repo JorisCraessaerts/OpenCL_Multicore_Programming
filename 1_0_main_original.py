@@ -287,7 +287,7 @@ def main():
         image_name = image_path.rsplit("/", maxsplit=1)[-1].split(".")[0]
         output_file = f"1_0_image_{image_name}.txt"
         with open(output_file, "w") as f_out:
-            for run in range(15):
+            for run in range(30):
                 print()
                 print(f"Image: {image_name} ({image_path})")
 

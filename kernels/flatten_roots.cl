@@ -1,20 +1,36 @@
-__kernel void flatten_roots(__global const int* parent,
-                             __global int* labels,
-                             const int num_pixels) {
+// Veilige flatten_roots.cl met path compression
+__kernel void flatten_roots(__global int* parent,
+                            __global int* labels,
+                            const int num_pixels) {
     int gid = get_global_id(0);
-    if (gid >= num_pixels)
-        return;
+    if (gid >= num_pixels) return;
 
-    int x = gid;
-    if (parent[x] == -1) {
-        labels[x] = -1;
+    int current_pixel = gid;
+    if (parent[current_pixel] == -1) {
+        labels[current_pixel] = -1;
         return;
     }
 
-    // Zoek root
-    while (parent[x] != x) {
-        x = parent[x];
+    // Stap 1: Vind de uiteindelijke root met een veilige lus
+    int root = current_pixel;
+    while (parent[root] != root && parent[root] != -1) {
+        root = parent[root];
+    }
+    
+    // Als de keten naar een achtergrondpixel leidde, markeer als achtergrond.
+    if (root == -1) {
+        labels[current_pixel] = -1;
+        return;
     }
 
-    labels[gid] = x;
+    // Stap 2: Pas path compression toe. Dit is hier veilig, want elke thread
+    // bewerkt alleen de keten die bij zijn EIGEN unieke 'gid' hoort.
+    int temp_pixel = current_pixel;
+    while (parent[temp_pixel] != root) {
+        int old_parent = parent[temp_pixel];
+        parent[temp_pixel] = root;
+        temp_pixel = old_parent;
+    }
+
+    labels[current_pixel] = root;
 }

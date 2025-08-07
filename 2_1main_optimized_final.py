@@ -90,34 +90,25 @@ def union_find_tiled(image, tile_size):
         mask_buf, parent_buf, rank_buf, np.int32(num_pixels)
     )
 
-    kernel_union_within_tile = build_kernel("union_within_tile.cl")
-    kernel_union_vertical    = build_kernel("union_vertical_borders.cl")
-    kernel_union_horizontal  = build_kernel("union_horizontal_borders.cl")
-    kernel_union_diagonal    = build_kernel("union_diagonal_borders.cl")
+    kernel_union_within_tile    = build_kernel("union_within_tile.cl")
+    kernel_union_across_borders = build_kernel("union_across_borders.cl")
+    # kernel_union_vertical       = build_kernel("union_vertical_borders.cl")
+    # kernel_union_horizontal     = build_kernel("union_horizontal_borders.cl")
+    # kernel_union_diagonal       = build_kernel("union_diagonal_borders.cl")
 
     # -------- ITERATIEVE UNION --------
     while True:
         cl.enqueue_copy(queue, changes_buf, np.zeros(1, dtype=np.int32))
 
+        # Stap 1: Verbind pixels BINNEN de tiles
         kernel_union_within_tile.union_within_tile(
             queue, (width, height), None,
             mask_buf, parent_buf, np.int32(width), np.int32(height),
             np.int32(tile_size), changes_buf
         )
 
-        kernel_union_vertical.union_vertical_borders(
-            queue, (width,), None,
-            mask_buf, parent_buf, np.int32(width), np.int32(height),
-            np.int32(tile_size), changes_buf
-        )
-
-        kernel_union_horizontal.union_horizontal_borders(
-            queue, (height,), None,
-            mask_buf, parent_buf, np.int32(width), np.int32(height),
-            np.int32(tile_size), changes_buf
-        )
-
-        kernel_union_diagonal.union_diagonal_borders(
+        # Stap 2: Verbind pixels OVER de grenzen van de tiles
+        kernel_union_across_borders.union_across_borders(
             queue, (width, height), None,
             mask_buf, parent_buf, np.int32(width), np.int32(height),
             np.int32(tile_size), changes_buf
@@ -128,6 +119,8 @@ def union_find_tiled(image, tile_size):
         queue.finish()
         if host_changes[0] == 0:
             break
+    
+    # --- CORRECTIE: Deze code staat nu NA de while-lus ---
 
     # -------- KERNEL 6: flatten_roots --------
     build_kernel("flatten_roots.cl").flatten_roots(
@@ -138,6 +131,7 @@ def union_find_tiled(image, tile_size):
     # Kopieer naar host
     label_host = np.empty(num_pixels, dtype=np.int32)
     cl.enqueue_copy(queue, label_host, label_buf)
+    queue.finish() # Wacht op de kopieer-operatie
     label_matrix = label_host.reshape((height, width))
 
     return label_matrix, context, queue
@@ -234,14 +228,14 @@ def main():
     #     ((128, 64), (1024,))
     # ]
 
-    for tile_size in [4, 8, 16, 32, 64, 128]:
+    for tile_size in [4]:#, 8, 16, 32, 64, 128]:
         print(f"Threshold: {THRESHOLD}")
 
         for image_path in IMAGES:
             image_name = image_path.rsplit("/", maxsplit=1)[-1].split(".")[0]
             output_file = f"2_1_{image_name}_tilsize_{tile_size}_.txt"
             with open(output_file, "w") as f_out:
-                runs = range(30)
+                runs = range(1)
                 for run in runs:
                     print()
                     print(f"Image: {image_name} ({image_path})")
@@ -261,8 +255,8 @@ def main():
                     cell_count = len(unique_labels)
 
                     # Voor visualisatie
-                    # cell_image = highlight_cells(label_matrix)
-                    # Image.fromarray(cell_image).save(f"{image_name}.result.png")
+                    cell_image = highlight_cells(label_matrix)
+                    Image.fromarray(cell_image).save(f"{image_name}.result.png")
 
                     end_time = time.perf_counter()
                     elapsed = end_time - start_time
