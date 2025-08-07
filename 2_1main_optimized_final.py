@@ -232,14 +232,14 @@ def main():
     #     ((128, 64), (1024,))
     # ]
 
-    for tile_size in [4]:#, 8, 16, 32, 64, 128]:
+    for tile_size in [4, 8, 16, 32, 64, 128]:
         print(f"Threshold: {THRESHOLD}")
 
         for image_path in IMAGES:
             image_name = image_path.rsplit("/", maxsplit=1)[-1].split(".")[0]
             output_file = f"2_1_{image_name}_tilsize_{tile_size}_.txt"
             with open(output_file, "w") as f_out:
-                runs = range(1)
+                runs = range(50)
                 for run in runs:
                     print()
                     print(f"Image: {image_name} ({image_path})")
@@ -259,8 +259,8 @@ def main():
                     cell_count = len(unique_labels)
 
                     # Voor visualisatie
-                    cell_image = highlight_cells(label_matrix)
-                    Image.fromarray(cell_image).save(f"{image_name}.result.png")
+                    # cell_image = highlight_cells(label_matrix)
+                    # Image.fromarray(cell_image).save(f"{image_name}.result.png")
 
                     end_time = time.perf_counter()
                     elapsed = end_time - start_time
