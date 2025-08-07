@@ -1,44 +1,66 @@
-__kernel void union_horizontal_borders(__global int* mask,
+// (Path compression weggelaten)
+inline int find_root(__global int* parent, int i) {
+    if (i == -1) {
+        return -1;
+    }
+    int root = i;
+    while (parent[root] != root && parent[root] != -1) {
+        root = parent[root];
+    }
+    return root;
+}
+
+__kernel void union_horizontal_borders(__global const int* mask,
                                        __global int* parent,
                                        const int width,
                                        const int height,
                                        const int tile_size,
                                        __global int* changes_made) {
-    int row = get_global_id(0);
-    if (row >= height) return;
+    int x = get_global_id(0);
+    int y = get_global_id(1);
 
-    for (int col = tile_size; col < width; col += tile_size) {
-        int idx_a = row * width + (col - 1);
-        int idx_b = row * width + col;
+    if (x >= width || y >= height) return;
 
-        int a = mask[idx_a];
-        int b = mask[idx_b];
+    // Deze kernel wordt enkel uitgevoerd voor pixels op de laatste rij van een tile
+    // (behalve voor de allerlaatste rij van de hele afbeelding, want deze heeft geen andere rij om mee te joinen).
+    if ((y % tile_size != tile_size - 1) || (y == height - 1)) {
+        return;
+    }
 
-        if (a == -1 || b == -1) continue;
+    int idx_a = y * width + x;
+    if (mask[idx_a] == -1) return;
 
-        // Check parent validity
-        if (parent[a] == -1 || parent[b] == -1) continue;
+    int root_a = find_root(parent, idx_a);
+    if (root_a == -1) return;
 
-        // Zoek root van a
-        int root_a = a;
-        while (parent[root_a] != root_a && parent[root_a] != -1)
-            root_a = parent[root_a];
+    // Controleer de 3 buren in de rij eronder (y+1)
+    for (int dx = -1; dx <= 1; dx++) {
+        int nx = x + dx;
+        int ny = y + 1;
 
-        // Zoek root van b
-        int root_b = b;
-        while (parent[root_b] != root_b && parent[root_b] != -1)
-            root_b = parent[root_b];
+        // Controleer of de buur binnen de afbeelding valt
+        if (nx >= 0 && nx < width) {
+            int idx_b = ny * width + nx;
 
-        if (root_a == -1 || root_b == -1 || root_a == root_b)
-            continue;
+            if (mask[idx_b] != -1) {
+                int root_b = find_root(parent, idx_b);
 
-        int old_val;
-        if (root_a < root_b) {
-            old_val = atomic_min(&parent[root_b], root_a);
-            if (old_val != root_a) atomic_or(changes_made, 1);
-        } else {
-            old_val = atomic_min(&parent[root_a], root_b);
-            if (old_val != root_b) atomic_or(changes_made, 1);
+                if (root_b != -1 && root_a != root_b) {
+                    // atomaire union-operatie
+                    int old_val;
+                    int new_root;
+                    if (root_a < root_b) {
+                        new_root = root_a;
+                        old_val = atomic_min(&parent[root_b], new_root);
+                    } else {
+                        new_root = root_b;
+                        old_val = atomic_min(&parent[root_a], new_root);
+                    }
+                    if (old_val > new_root) {
+                        atomic_or(changes_made, 1);
+                    }
+                }
+            }
         }
     }
 }
