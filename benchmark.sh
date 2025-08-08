@@ -2,7 +2,7 @@
 # python3 2_2_tiled_with_local_memory.py
 
 echo "Running script met workgroup sizes..."
-python3 2_2main_optimized_final_workgroup_sizes.py
+python3 2_3local_memory.py
 # echo "Running script1..."
 # python3 1_0_main_original.py
 

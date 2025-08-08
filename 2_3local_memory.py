@@ -73,7 +73,7 @@ def union_find_tiled(image, tile_size, workgroup_size):
     def build_kernel(fname):
         with open(os.path.join("kernels", fname)) as f:
             return cl.Program(context, f.read()).build()
-    kernel_union_within_tile = build_kernel("union_within_tile.cl")
+    kernel_union_within_tile = build_kernel("union_within_tile_local_memory.cl")
     kernel_union_horizontal_borders = build_kernel("union_horizontal_borders.cl")
     kernel_union_vertical_borders = build_kernel("union_vertical_borders.cl")
     build_kernel("threshold_mask.cl").threshold_mask(queue, (width, height), None, img_buf, mask_buf, np.int32(width), np.int32(height), np.int32(THRESHOLD))
@@ -91,8 +91,10 @@ def union_find_tiled(image, tile_size, workgroup_size):
 
         kernel_union_within_tile.union_within_tile(
             queue, global_work_shape_2d_main, workgroup_size,
-            mask_buf, parent_buf, np.int32(width), np.int32(height),
-            np.int32(tile_size), changes_buf
+            mask_buf, parent_buf,
+            np.int32(width), np.int32(height),
+            np.int32(tile_size),
+            changes_buf
         )
         
         # --- CORRECTIE VOOR DE GRENS-KERNELS ---

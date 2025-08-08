@@ -18,7 +18,7 @@ IMAGES = [
     "./images/RBCs_Platelets_WBC_in_PBS_2.jpg",
     "./images/Thrombocytes.jpg",
     "./images/Thrombocytosis.jpg",
-    "./images/tiny-example.bmp",  # Used in the assignment
+    "./images/tiny-example.bmp",
 ]
 
 
@@ -287,7 +287,8 @@ def main():
         image_name = image_path.rsplit("/", maxsplit=1)[-1].split(".")[0]
         output_file = f"1_0_image_{image_name}.txt"
         with open(output_file, "w") as f_out:
-            for run in range(30):
+            # 30 warmup runs and 30 real benchmark runs.
+            for run in range(60):
                 print()
                 print(f"Image: {image_name} ({image_path})")
 
@@ -327,8 +328,8 @@ def main():
                 # as PNG, to avoid compression artifacts.
 
                 # Display results
-                print(f"Cell count: {cell_count}")
                 elapsed = end_time - start_time
+                print(f"Cell count: {cell_count}")
                 f_out.writelines(f"{elapsed:.4f}\n")
                 print(f"Execution time: {end_time - start_time:.4f}s")
 
