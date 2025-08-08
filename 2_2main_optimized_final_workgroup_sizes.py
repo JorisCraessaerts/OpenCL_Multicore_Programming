@@ -49,6 +49,7 @@ def is_part_of_cell(pixel):
 def union_find_tiled(image, tile_size, workgroup_size):    
     height, width, channels = image.shape
 
+    assert channels in [3, 4], "Image must have 3 (RGB) or 4 (RGBA) channels."
     if channels == 3:
         alpha = np.full((height, width, 1), 255, dtype=np.uint8)
         image = np.concatenate((image, alpha), axis=2)
@@ -87,30 +88,30 @@ def union_find_tiled(image, tile_size, workgroup_size):
         mask_buf, parent_buf, rank_buf, np.int32(num_pixels)
     )
 
-    # Jouw originele kernel variabelen
     kernel_union_within_tile = build_kernel("union_within_tile.cl")
     kernel_union_horizontal_borders = build_kernel("union_horizontal_borders.cl")
     kernel_union_vertical_borders = build_kernel("union_vertical_borders.cl")
 
-    # --- NOODZAKELIJKE AANPASSING VOOR WORKGROUP_SIZE ---
-    # Bereken de opgevulde globale grootte om crashes te voorkomen.
+    # *** BELANGRIJK: PADDING LOGICA VOOR 2D KERNELS ***
     wgs_x, wgs_y = workgroup_size
     g_width = (width + wgs_x - 1) // wgs_x * wgs_x
     g_height = (height + wgs_y - 1) // wgs_y * wgs_y
     global_work_shape_2d = (g_width, g_height)
+
+    num_h_border_groups = (height - 1) // tile_size
+    num_v_border_groups = (width - 1) // tile_size
     
     # -------- ITERATIEVE UNION --------
     while True:
         cl.enqueue_copy(queue, changes_buf, np.zeros(1, dtype=np.int32))
 
-        # Stap 1: Verbind pixels BINNEN de tiles met de meegegeven workgroup_size
+        # Stap 1: Verbind pixels BINNEN de tiles
         kernel_union_within_tile.union_within_tile(
-            queue, global_work_shape_2d, workgroup_size,
+            queue, global_work_shape_2d, workgroup_size,  # None is prima, of (tile_size, tile_size) voor optimalisatie
             mask_buf, parent_buf, np.int32(width), np.int32(height),
             np.int32(tile_size), changes_buf
         )
 
-        # Stap 2: Grens-kernels blijven ongewijzigd, zoals je vroeg
         kernel_union_horizontal_borders.union_horizontal_borders(
             queue, (width, height), None,
             mask_buf, parent_buf, np.int32(width), np.int32(height),
@@ -217,14 +218,19 @@ def parse_workgroup_size(s):
 def main():
     # De tile sizes maken niet uit aangezien de gegevens van een tile niet naar local memory worden gekopieerd en men dus op global memory blijft werken.
     # Hierdoor zal de tile grootte niet uitmaken omdat men dus nooit meer gegevens naar local memory zal kopiëren bij een hogere tile size en er dus ook geen snellere geheugenacces is.
-    for tile_size in [4, 8, 16, 32, 64, 128, 256, 512, 1024]:
+    
+    work_group_sizes_to_test = [(8, 8), (16, 8), (16, 16), (32, 16), (32, 32)]
+
+    
+    for work_group_size in work_group_sizes_to_test:
+        wgs_str = f"{work_group_size[0]}x{work_group_size[1]}"
         print(f"Threshold: {THRESHOLD}")
 
         for image_path in IMAGES:
             image_name = image_path.rsplit("/", maxsplit=1)[-1].split(".")[0]
-            output_file = f"2_1_{image_name}_tilsize_{tile_size}_.txt"
+            output_file = f"perf_{image_name}_wgs_{wgs_str}_.txt" # Voorbeeld bestandsnaam
             with open(output_file, "w") as f_out:
-                runs = range(50)
+                runs = range(30)
                 for run in runs:
                     print()
                     print(f"Image: {image_name} ({image_path})")
@@ -233,19 +239,18 @@ def main():
                     img = load_image(image_path)
                     img_arr = np.asarray(img).astype(np.uint8)
                     print(f"Image size: {img_arr.shape}, {img_arr.size} pixels")
+                    tile_size = 16
+
 
                     start_time = time.perf_counter()
 
                     # Verwerk image
-                    label_matrix, context, queue = union_find_tiled(img_arr, tile_size)
+                    label_matrix, context, queue = union_find_tiled(img_arr, tile_size, work_group_size)
 
                     # Aantal unieke componenten tellen
                     unique_labels = np.unique(label_matrix[label_matrix != -1])
                     cell_count = len(unique_labels)
 
-                    # Voor visualisatie
-                    # cell_image = highlight_cells(label_matrix)
-                    # Image.fromarray(cell_image).save(f"{image_name}.result.png")
 
                     end_time = time.perf_counter()
                     elapsed = end_time - start_time
@@ -254,6 +259,10 @@ def main():
 
                     f_out.writelines(f"{elapsed:.4f}\n")
                     print(f"Run {run+1}/{runs}: {elapsed:.4f}s")
+
+                    # # Voor visualisatie
+                    # cell_image = highlight_cells(label_matrix)
+                    # Image.fromarray(cell_image).save(f"{image_name}.result.png")
 
 
 if __name__ == "__main__":
