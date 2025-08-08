@@ -99,7 +99,9 @@ def matrix_to_svg(matrix, filename):
                 f.write(f'<text x="{col}.5" y="{row}.5">{matrix[row, col]}</text>\n')
         f.write("</svg>\n")
 
-def union_find_tiled(image, tile_size, workgroup_size):    
+
+
+def union_find_tiled(image, tile_size):    
     height, width, channels = image.shape
 
     if channels == 3:
@@ -117,64 +119,56 @@ def union_find_tiled(image, tile_size, workgroup_size):
     mf = cl.mem_flags
 
     # Buffers
-    img_buf = cl.Buffer(context, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=img_flat)
-    mask_buf = cl.Buffer(context, mf.READ_WRITE, size=4 * num_pixels)
-    parent_buf = cl.Buffer(context, mf.READ_WRITE, size=4 * num_pixels)
-    label_buf = cl.Buffer(context, mf.WRITE_ONLY, size=4 * num_pixels)
-    changes_buf = cl.Buffer(context, mf.READ_WRITE, size=4)
-    
+    img_buf     = cl.Buffer(context, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=img_flat) #inputafbeelding
+    mask_buf    = cl.Buffer(context, mf.READ_WRITE, size=4 * num_pixels) # buffer voor de mask die voor elke pixel -1 of het pixelid bevat
+    parent_buf  = cl.Buffer(context, mf.READ_WRITE, size=4 * num_pixels) # Houdt bij naar welke parent een pixel verwijst.
+    label_buf   = cl.Buffer(context, mf.WRITE_ONLY, size=4 * num_pixels) # Bevat de uiteindelijke root van een pixel
+    changes_buf = cl.Buffer(context, mf.READ_WRITE, size=4) # Houdt bij of er tijdens de iteratie wijzigingen zijn gebeurt. Dit gebruiken we om na te gaan of we outer while loop nog eens moeten oproepen om verder te joinen.
+
     # Helpermethodetje om een kernel te builden
     def build_kernel(fname):
         with open(os.path.join("kernels", fname)) as f:
             return cl.Program(context, f.read()).build()
-        
-    build_kernel("threshold_mask.cl").threshold_mask(queue, (width, height), None, img_buf, mask_buf, np.int32(width), np.int32(height), np.int32(THRESHOLD))
-    build_kernel("initialize_union_data.cl").initialize_union(queue, (num_pixels,), None, mask_buf, parent_buf, np.int32(num_pixels))
+
+    # Kernel threshold_mask.cl
+    build_kernel("threshold_mask.cl").threshold_mask(
+        queue, (width, height), None,
+        img_buf, mask_buf, np.int32(width), np.int32(height), np.int32(THRESHOLD)
+    )
+
+    # Kernel initialize_union.cl
+    build_kernel("initialize_union_data.cl").initialize_union(
+        queue, (num_pixels,), None,
+        mask_buf, parent_buf, np.int32(num_pixels)
+    )
 
     kernel_union_within_tile = build_kernel("union_within_tile.cl")
     kernel_union_horizontal_borders = build_kernel("union_horizontal_borders.cl")
     kernel_union_vertical_borders = build_kernel("union_vertical_borders.cl")
 
-    # De globale grootte moet een veelvoud zijn van de workgroup size, dus hier voeg ik padding toe indien nodig.
-    # Nodig om te voorkomen dat er out of bounds errors zijn. We voegen gewoon extra 'dummy pixels' toe om tot een correct veelvoud te komen van de workgroup size.
-    workgroupsize_x, workgroupsize_y = workgroup_size
-    g_width_padded = (width + workgroupsize_x - 1) // workgroupsize_x * workgroupsize_x
-    g_height_padded = (height + workgroupsize_y - 1) // workgroupsize_y * workgroupsize_y
-    global_work_shape_2d_main = (g_width_padded, g_height_padded)
     
     # Iteratieve union join totdat er geen wijzigingen meer gedetcteerd worden.
     while True:
         cl.enqueue_copy(queue, changes_buf, np.zeros(1, dtype=np.int32))
 
+        # Union find binnenin een tile
         kernel_union_within_tile.union_within_tile(
-            queue, global_work_shape_2d_main, workgroup_size,
+            queue, (width, height), None,
             mask_buf, parent_buf, np.int32(width), np.int32(height),
             np.int32(tile_size), changes_buf
         )
-        
-        border_rows = (height - 1) // tile_size
-        if border_rows > 0:
-            # Pad de 'width' dimensie voor de horizontale grens-kernel
-            padded_width = (width + workgroupsize_x - 1) // workgroupsize_x * workgroupsize_x
-            horizontal_shape = (padded_width, border_rows)
-            horizontal_workgroupsize = (workgroupsize_x, 1)
-            kernel_union_horizontal_borders.union_horizontal_borders(
-                queue, horizontal_shape, horizontal_workgroupsize,
-                mask_buf, parent_buf, np.int32(width), np.int32(height),
-                np.int32(tile_size), changes_buf
-            )
 
-        border_cols = (width - 1) // tile_size
-        if border_cols > 0:
-            # Pad de 'height' dimensie voor de verticale grens-kernel
-            padded_height = (height + workgroupsize_y - 1) // workgroupsize_y * workgroupsize_y
-            vertical_shape = (border_cols, padded_height)
-            vertical_workgroupsize = (1, workgroupsize_y)
-            kernel_union_vertical_borders.union_vertical_borders(
-                queue, vertical_shape, vertical_workgroupsize,
-                mask_buf, parent_buf, np.int32(width), np.int32(height),
-                np.int32(tile_size), changes_buf
-            )
+        # Nu doen we de union tussen de verschillende tiles op de randen (verticaal en horizontaal langs de randen van de tiles)
+        kernel_union_horizontal_borders.union_horizontal_borders(
+            queue, (width, height), None,
+            mask_buf, parent_buf, np.int32(width), np.int32(height),
+            np.int32(tile_size), changes_buf
+        )
+        kernel_union_vertical_borders.union_vertical_borders(
+            queue, (width, height), None,
+            mask_buf, parent_buf, np.int32(width), np.int32(height),
+            np.int32(tile_size), changes_buf
+        )
 
         host_changes = np.zeros(1, dtype=np.int32)
         cl.enqueue_copy(queue, host_changes, changes_buf)
@@ -183,29 +177,31 @@ def union_find_tiled(image, tile_size, workgroup_size):
         if host_changes[0] == 0:
             break
             
+    # Kernel flatten_roots.cl
     build_kernel("flatten_roots.cl").flatten_roots(
-        queue, (num_pixels,), None, parent_buf, label_buf, np.int32(num_pixels)
+        queue, (num_pixels,), None,
+        parent_buf, label_buf, np.int32(num_pixels)
     )
 
+    # Resultaten terug naar host kopiëren zodat we deze kunnen uitlezen.
     label_host = np.empty(num_pixels, dtype=np.int32)
-    cl.enqueue_copy(queue, label_host, label_buf).wait()
+    cl.enqueue_copy(queue, label_host, label_buf)
+    queue.finish()
     label_matrix = label_host.reshape((height, width))
 
     return label_matrix, context, queue
 
 
 def main():
-    # Workgroup size doet niet veel. Het programma is vooral memory bound. We kunnen wel grotere of kleinere workgroups maken, maar aangezien
-    # we geen local memory gebruiken zal de impact hiervan heel beperkt zijn.
-    work_group_sizes_to_test = [(8, 8) (16, 8), (16, 16), (32, 16), (32, 32)]
-    
-    for work_group_size in work_group_sizes_to_test:
-        wgs_str = f"{work_group_size[0]}x{work_group_size[1]}"
+    # De tile sizes maken niet uit aangezien de gegevens van een tile niet naar local memory worden gekopieerd en men dus op global memory blijft werken.
+    # Hierdoor zal de tile grootte niet uitmaken omdat men dus nooit meer gegevens naar local memory zal kopiëren bij een hogere tile size en er dus ook geen snellere geheugenacces is.
+    # Het programma is memory bound
+    for tile_size in [32]:
         print(f"Threshold: {THRESHOLD}")
 
         for image_path in IMAGES:
             image_name = image_path.rsplit("/", maxsplit=1)[-1].split(".")[0]
-            output_file = f"perf_{image_name}_wgs_{wgs_str}_.txt"
+            output_file = f"2_1_{image_name}_tilsize_{tile_size}_.txt"
             with open(output_file, "w") as f_out:
                 runs = range(60)
                 for run in runs:
@@ -216,28 +212,27 @@ def main():
                     img = load_image(image_path)
                     img_arr = np.asarray(img).astype(np.uint8)
                     print(f"Image size: {img_arr.shape}, {img_arr.size} pixels")
-                    tile_size = 16
 
                     start_time = time.perf_counter()
 
                     # Verwerk image
-                    label_matrix, context, queue = union_find_tiled(img_arr, tile_size, work_group_size) # De workgroupsize nu meegeven
+                    label_matrix, context, queue = union_find_tiled(img_arr, tile_size)
 
                     # Aantal unieke componenten tellen
                     unique_labels = np.unique(label_matrix[label_matrix != -1])
                     cell_count = len(unique_labels)
 
+                    # Voor visualisatie
+                    # cell_image = highlight_cells(label_matrix)
+                    # Image.fromarray(cell_image).save(f"{image_name}.result.png")
 
                     end_time = time.perf_counter()
                     elapsed = end_time - start_time
                     print(f"Cell count: {cell_count}")
                     print(f"Execution time: {elapsed:.4f}s")
+
                     f_out.writelines(f"{elapsed:.4f}\n")
                     print(f"Run {run+1}/{runs}: {elapsed:.4f}s")
-
-                    # # Voor visualisatie
-                    # cell_image = highlight_cells(label_matrix)
-                    # Image.fromarray(cell_image).save(f"{image_name}.result.png")
 
 
 if __name__ == "__main__":

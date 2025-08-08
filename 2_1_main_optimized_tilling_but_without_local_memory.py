@@ -196,14 +196,14 @@ def main():
     # De tile sizes maken niet uit aangezien de gegevens van een tile niet naar local memory worden gekopieerd en men dus op global memory blijft werken.
     # Hierdoor zal de tile grootte niet uitmaken omdat men dus nooit meer gegevens naar local memory zal kopiëren bij een hogere tile size en er dus ook geen snellere geheugenacces is.
     # Het programma is memory bound
-    for tile_size in [4]:#, 8, 16, 32, 64]:
+    for tile_size in [4, 8, 16, 32, 64]:
         print(f"Threshold: {THRESHOLD}")
 
         for image_path in IMAGES:
             image_name = image_path.rsplit("/", maxsplit=1)[-1].split(".")[0]
             output_file = f"2_1_{image_name}_tilsize_{tile_size}_.txt"
             with open(output_file, "w") as f_out:
-                runs = range(1)
+                runs = range(60)
                 for run in runs:
                     print()
                     print(f"Image: {image_name} ({image_path})")

@@ -1,4 +1,5 @@
 // (Path compression weggelaten)
+// Kernel om de vertikale randen tussen twee tiles te joinen. Bij zo'n rand moeten de naburige tiles horizontaal alsook diagonaal gejoind worden indien nodig.
 inline int find_root(__global int* parent, int i) {
     if (i == -1) {
         return -1;
@@ -16,8 +17,8 @@ __kernel void union_vertical_borders(__global const int* mask,
                                      const int height,
                                      const int tile_size,
                                      __global int* changes_made) {
-    int tile_index = get_global_id(0); // kolom-border index
-    int y = get_global_id(1);          // normale rij
+    int tile_index = get_global_id(0);
+    int y = get_global_id(1);         
 
     int x = tile_index * tile_size + (tile_size - 1);
     if (x >= width - 1 || y >= height) return;

@@ -1,4 +1,5 @@
 // (Path compression weggelaten)
+// Kernel om de horizontale randen tussen twee tiles te joinen. Bij zo'n rand moeten de naburige tiles verticaal alsook diagonaal gejoind worden indien nodig.
 inline int find_root(__global int* parent, int i) {
     if (i == -1) {
         return -1;
