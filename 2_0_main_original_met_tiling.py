@@ -282,17 +282,18 @@ def tiled_union_find(mask_matrix, tile_size=16):
     num_pixels = height * width
 
     parent = np.full(num_pixels, -1, dtype=np.int32)
-    rank = np.zeros(num_pixels, dtype=np.int32)
 
     def index(y, x):
         return y * width + x
 
+    # Dit is gewoon de find om de root te vinden. We blijven zoeken zolang de parent niet gelijk is aan de huidige pixel of niet gelijk is aan een achtergrondpixel
     def find(x):
         while parent[x] != x and parent[x] != -1:
             parent[x] = parent[parent[x]]  # path compression
             x = parent[x]
         return x
 
+    # Union om twee pixels aan elkaar te hangen.
     def union(x, y):
         root_x = find(x)
         root_y = find(y)
@@ -304,30 +305,30 @@ def tiled_union_find(mask_matrix, tile_size=16):
             parent[root_x] = root_y
         return True
 
-    # Step 1: Initialize parent
+    # Initializeer de parent parent: 
     for y in range(height):
         for x in range(width):
-            idx = index(y, x)
+            idx = index(y, x) # Zoek de index op op in de ééndimensional rij
             if mask_matrix[y, x] != -1:
                 parent[idx] = idx
 
-    # Offsets for 8-neighborhood
+    # De 8 buren rond de pixel
     neighbors = [(-1, -1), (-1, 0), (-1, 1),
-                 (0, -1),          (0, 1),
+                 (0, -1),            (0, 1),
                  (1, -1),  (1, 0), (1, 1)]
 
     changed = True
     while changed:
         changed = False
 
-        # Step 2: Binnen tiles
+        # union_within_tiles
         for tile_y in range(0, height, tile_size):
             for tile_x in range(0, width, tile_size):
-                for y in range(tile_y, min(tile_y + tile_size, height)):
-                    for x in range(tile_x, min(tile_x + tile_size, width)):
+                for y in range(tile_y, min(tile_y + tile_size, height)): # naar beneden afronden omdat tiles op de randen van de afbeelding natuurlijk minder pixels hebben.
+                    for x in range(tile_x, min(tile_x + tile_size, width)): # Hetzelfde hier
                         if mask_matrix[y, x] == -1:
                             continue
-                        for dy, dx in neighbors:
+                        for dy, dx in neighbors: # Bekijk de directe buren van de tile door de x en y coördinaten overeenkomstig aan te passen.
                             ny, nx = y + dy, x + dx
                             if 0 <= ny < height and 0 <= nx < width:
                                 if mask_matrix[ny, nx] == -1:
