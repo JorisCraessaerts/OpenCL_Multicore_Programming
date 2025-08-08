@@ -17,15 +17,10 @@ __kernel void union_horizontal_borders(__global const int* mask,
                                        const int tile_size,
                                        __global int* changes_made) {
     int x = get_global_id(0);
-    int y = get_global_id(1);
+    int tile_index = get_global_id(1); // we hergebruiken nu enkel de benodigde tile-randen
 
-    if (x >= width || y >= height) return;
-
-    // Deze kernel wordt enkel uitgevoerd voor pixels op de laatste rij van een tile
-    // (behalve voor de allerlaatste rij van de hele afbeelding, want deze heeft geen andere rij om mee te joinen).
-    if ((y % tile_size != tile_size - 1) || (y == height - 1)) {
-        return;
-    }
+    int y = tile_index * tile_size + (tile_size - 1);
+    if (x >= width || y >= height - 1) return;
 
     int idx_a = y * width + x;
     if (mask[idx_a] == -1) return;
@@ -38,7 +33,6 @@ __kernel void union_horizontal_borders(__global const int* mask,
         int nx = x + dx;
         int ny = y + 1;
 
-        // Controleer of de buur binnen de afbeelding valt
         if (nx >= 0 && nx < width) {
             int idx_b = ny * width + nx;
 
@@ -46,7 +40,6 @@ __kernel void union_horizontal_borders(__global const int* mask,
                 int root_b = find_root(parent, idx_b);
 
                 if (root_b != -1 && root_a != root_b) {
-                    // atomaire union-operatie
                     int old_val;
                     int new_root;
                     if (root_a < root_b) {

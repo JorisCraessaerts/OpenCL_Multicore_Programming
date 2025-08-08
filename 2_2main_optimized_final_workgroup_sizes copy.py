@@ -49,7 +49,6 @@ def is_part_of_cell(pixel):
 def union_find_tiled(image, tile_size, workgroup_size):    
     height, width, channels = image.shape
 
-    assert channels in [3, 4], "Image must have 3 (RGB) or 4 (RGBA) channels."
     if channels == 3:
         alpha = np.full((height, width, 1), 255, dtype=np.uint8)
         image = np.concatenate((image, alpha), axis=2)
@@ -64,64 +63,62 @@ def union_find_tiled(image, tile_size, workgroup_size):
     queue = cl.CommandQueue(context, properties=cl.command_queue_properties.PROFILING_ENABLE)
     mf = cl.mem_flags
 
-    # Buffers
-    img_buf     = cl.Buffer(context, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=img_flat)
-    mask_buf    = cl.Buffer(context, mf.READ_WRITE, size=4 * num_pixels)
-    parent_buf  = cl.Buffer(context, mf.READ_WRITE, size=4 * num_pixels)
-    rank_buf    = cl.Buffer(context, mf.READ_WRITE, size=4 * num_pixels)
-    label_buf   = cl.Buffer(context, mf.WRITE_ONLY, size=4 * num_pixels)
+    # --- (Buffer creatie en initiële kernel compilatie blijven hetzelfde) ---
+    img_buf = cl.Buffer(context, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=img_flat)
+    mask_buf = cl.Buffer(context, mf.READ_WRITE, size=4 * num_pixels)
+    parent_buf = cl.Buffer(context, mf.READ_WRITE, size=4 * num_pixels)
+    rank_buf = cl.Buffer(context, mf.READ_WRITE, size=4 * num_pixels)
+    label_buf = cl.Buffer(context, mf.WRITE_ONLY, size=4 * num_pixels)
     changes_buf = cl.Buffer(context, mf.READ_WRITE, size=4)
-
     def build_kernel(fname):
         with open(os.path.join("kernels", fname)) as f:
             return cl.Program(context, f.read()).build()
-
-    # -------- KERNEL 1: threshold_mask --------
-    build_kernel("threshold_mask.cl").threshold_mask(
-        queue, (width, height), None,
-        img_buf, mask_buf, np.int32(width), np.int32(height), np.int32(THRESHOLD)
-    )
-
-    # -------- KERNEL 2: initialize_union --------
-    build_kernel("initialize_union_data.cl").initialize_union(
-        queue, (num_pixels,), None,
-        mask_buf, parent_buf, rank_buf, np.int32(num_pixels)
-    )
-
     kernel_union_within_tile = build_kernel("union_within_tile.cl")
     kernel_union_horizontal_borders = build_kernel("union_horizontal_borders.cl")
     kernel_union_vertical_borders = build_kernel("union_vertical_borders.cl")
+    build_kernel("threshold_mask.cl").threshold_mask(queue, (width, height), None, img_buf, mask_buf, np.int32(width), np.int32(height), np.int32(THRESHOLD))
+    build_kernel("initialize_union_data.cl").initialize_union(queue, (num_pixels,), None, mask_buf, parent_buf, rank_buf, np.int32(num_pixels))
 
-    # *** BELANGRIJK: PADDING LOGICA VOOR 2D KERNELS ***
+    # Padding voor de union_within_tile kernel
     wgs_x, wgs_y = workgroup_size
-    g_width = (width + wgs_x - 1) // wgs_x * wgs_x
-    g_height = (height + wgs_y - 1) // wgs_y * wgs_y
-    global_work_shape_2d = (g_width, g_height)
-
-    num_h_border_groups = (height - 1) // tile_size
-    num_v_border_groups = (width - 1) // tile_size
+    g_width_padded = (width + wgs_x - 1) // wgs_x * wgs_x
+    g_height_padded = (height + wgs_y - 1) // wgs_y * wgs_y
+    global_work_shape_2d_main = (g_width_padded, g_height_padded)
     
     # -------- ITERATIEVE UNION --------
     while True:
         cl.enqueue_copy(queue, changes_buf, np.zeros(1, dtype=np.int32))
 
-        # Stap 1: Verbind pixels BINNEN de tiles
         kernel_union_within_tile.union_within_tile(
-            queue, global_work_shape_2d, workgroup_size,  # None is prima, of (tile_size, tile_size) voor optimalisatie
+            queue, global_work_shape_2d_main, workgroup_size,
             mask_buf, parent_buf, np.int32(width), np.int32(height),
             np.int32(tile_size), changes_buf
         )
+        
+        # --- CORRECTIE VOOR DE GRENS-KERNELS ---
+        border_rows = (height - 1) // tile_size
+        if border_rows > 0:
+            # Pad de 'width' dimensie voor de horizontale grens-kernel
+            padded_width = (width + wgs_x - 1) // wgs_x * wgs_x
+            horizontal_shape = (padded_width, border_rows)
+            horizontal_wgs = (wgs_x, 1) # Gebruik een 1D-achtige workgroup
+            kernel_union_horizontal_borders.union_horizontal_borders(
+                queue, horizontal_shape, horizontal_wgs,
+                mask_buf, parent_buf, np.int32(width), np.int32(height),
+                np.int32(tile_size), changes_buf
+            )
 
-        kernel_union_horizontal_borders.union_horizontal_borders(
-            queue, (width, height), None,
-            mask_buf, parent_buf, np.int32(width), np.int32(height),
-            np.int32(tile_size), changes_buf
-        )
-        kernel_union_vertical_borders.union_vertical_borders(
-            queue, (width, height), None,
-            mask_buf, parent_buf, np.int32(width), np.int32(height),
-            np.int32(tile_size), changes_buf
-        )
+        border_cols = (width - 1) // tile_size
+        if border_cols > 0:
+            # Pad de 'height' dimensie voor de verticale grens-kernel
+            padded_height = (height + wgs_y - 1) // wgs_y * wgs_y
+            vertical_shape = (border_cols, padded_height)
+            vertical_wgs = (1, wgs_y) # Gebruik een 1D-achtige workgroup
+            kernel_union_vertical_borders.union_vertical_borders(
+                queue, vertical_shape, vertical_wgs,
+                mask_buf, parent_buf, np.int32(width), np.int32(height),
+                np.int32(tile_size), changes_buf
+            )
 
         host_changes = np.zeros(1, dtype=np.int32)
         cl.enqueue_copy(queue, host_changes, changes_buf)
@@ -130,19 +127,16 @@ def union_find_tiled(image, tile_size, workgroup_size):
         if host_changes[0] == 0:
             break
             
-    # -------- KERNEL 6: flatten_roots (na de lus) --------
     build_kernel("flatten_roots.cl").flatten_roots(
-        queue, (num_pixels,), None,
-        parent_buf, label_buf, np.int32(num_pixels)
+        queue, (num_pixels,), None, parent_buf, label_buf, np.int32(num_pixels)
     )
 
-    # Kopieer naar host
     label_host = np.empty(num_pixels, dtype=np.int32)
-    cl.enqueue_copy(queue, label_host, label_buf)
-    queue.finish()
+    cl.enqueue_copy(queue, label_host, label_buf).wait()
     label_matrix = label_host.reshape((height, width))
 
     return label_matrix, context, queue
+
 
 
 
