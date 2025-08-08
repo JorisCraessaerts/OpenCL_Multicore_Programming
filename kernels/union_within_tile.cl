@@ -10,6 +10,11 @@ inline int find_root(__global int* parent, int i) {
     return root;
 }
 
+
+// Deze kernel zou nog veel efficiënter kunnen worden indien we bij de tiled approach ook alle gegevens kopiëren naar lokal memory.
+// Het ingewikkelde is dat bij volgende iteraties van union find, de pixels binnen een tile kunnen verwijzen naar pixels buiten de tile (door uitvoer van union horizontal borders en unions vertical borders).
+// Hierdoor verwijzen de parents in die gevallen naar memory locaties buiten de local memory. Dit heb ik nog niet werkende gekregen.
+
 __kernel void union_within_tile(__global const int* mask,
                                 __global int* parent,
                                 const int width,

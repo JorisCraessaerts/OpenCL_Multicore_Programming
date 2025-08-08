@@ -1,14 +1,14 @@
-echo "Running script1..."
-python3 2_2_tiled_with_local_memory.py
-
 # echo "Running script1..."
-# python3 1_0_main_original.py
+# python3 2_2_tiled_with_local_memory.py
 
-# # Voer het tweede Python-script uit
-# echo "Running script2..."
-# python3 1_1main_first_optimization.py
+echo "Running script1..."
+python3 1_0_main_original.py
 
-# echo "Running script3..."
-# python3 2_1main_optimized_final.py
+# Voer het tweede Python-script uit
+echo "Running script2..."
+python3 1_1main_first_optimization.py
 
-# echo "Beide scripts zijn succesvol uitgevoerd."
+echo "Running script3..."
+python3 2_1main_optimized_final.py
+
+echo "Beide scripts zijn succesvol uitgevoerd."

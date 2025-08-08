@@ -212,26 +212,8 @@ def parse_workgroup_size(s):
 
 
 def main():
-    # #dragonfly_cores = 16384;
-    # #personalpc_cores = 2176;
-
-    # dragonfly_workgroupsizes = [(64, 64), (64, 128), (128, 128),(128,256), (256, 256), (256, 512), (512, 512)]
-    # personalpc_workgroupsizes = [(32, 32), (64, 64), (128, 64)]
-
-
-    # ideal_workgroupsize_personalpc = (128, 64)
-    # ideal_workgroupsize_dragonfly = (256, 256)
-
-    # ideal_workgroupsize = ideal_workgroupsize_personalpc
- 
-    # workgroupsizes = personalpc_workgroupsizes
-
-    # testcases = [
-    #     ((32, 32), (256,)),
-    #     ((64, 64), (512,)),
-    #     ((128, 64), (1024,))
-    # ]
-
+    # De tile sizes maken niet uit aangezien de gegevens van een tile niet naar local memory worden gekopieerd en men dus op global memory blijft werken.
+    # Hierdoor zal de tile grootte niet uitmaken omdat men dus nooit meer gegevens naar local memory zal kopiëren bij een hogere tile size en er dus ook geen snellere geheugenacces is.
     for tile_size in [4, 8, 16, 32, 64, 128, 256, 512, 1024]:
         print(f"Threshold: {THRESHOLD}")
 
