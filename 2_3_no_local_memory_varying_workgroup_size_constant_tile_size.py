@@ -154,7 +154,7 @@ def union_find_tiled(image, tile_size, workgroup_size):
         
         border_rows = (height - 1) // tile_size
         if border_rows > 0:
-            # Pad de 'width' dimensie voor de horizontale grens-kernel
+            # Padding van de breedte
             padded_width = (width + workgroupsize_x - 1) // workgroupsize_x * workgroupsize_x
             horizontal_shape = (padded_width, border_rows)
             horizontal_workgroupsize = (workgroupsize_x, 1)
@@ -166,7 +166,7 @@ def union_find_tiled(image, tile_size, workgroup_size):
 
         border_cols = (width - 1) // tile_size
         if border_cols > 0:
-            # Pad de 'height' dimensie voor de verticale grens-kernel
+            # Pading van de hoogte
             padded_height = (height + workgroupsize_y - 1) // workgroupsize_y * workgroupsize_y
             vertical_shape = (border_cols, padded_height)
             vertical_workgroupsize = (1, workgroupsize_y)
@@ -221,7 +221,7 @@ def main():
                     start_time = time.perf_counter()
 
                     # Verwerk image
-                    label_matrix, context, queue = union_find_tiled(img_arr, tile_size, work_group_size) # De workgroupsize nu meegeven
+                    label_matrix, context, queue = union_find_tiled(img_arr, tile_size, work_group_size)
 
                     # Aantal unieke componenten tellen
                     unique_labels = np.unique(label_matrix[label_matrix != -1])

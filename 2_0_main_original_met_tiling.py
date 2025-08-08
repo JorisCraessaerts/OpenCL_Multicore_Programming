@@ -313,9 +313,7 @@ def tiled_union_find(mask_matrix, tile_size=16):
                 parent[idx] = idx
 
     # De 8 buren rond de pixel
-    neighbors = [(-1, -1), (-1, 0), (-1, 1),
-                 (0, -1),            (0, 1),
-                 (1, -1),  (1, 0), (1, 1)]
+    neighbors = [(-1, -1),(-1, 0),(-1, 1),(0, -1),(0, 1),(1, -1),(1, 0),(1, 1)]
 
     changed = True
     while changed:
@@ -358,12 +356,10 @@ def tiled_union_find(mask_matrix, tile_size=16):
             if x1 >= width or x2 >= width: continue
 
             for y in range(height):
-                # Controleer enkel de directe buur rechts. De diagonale verbindingen
-                # zijn al gedekt door de lus hierboven.
                 if mask_matrix[y, x1] != -1 and mask_matrix[y, x2] != -1:
                     changed |= union(index(y, x1), index(y, x2))
 
-    # Step 6: Flatten roots
+    # Flatten roots zoals bij originele python code
     label_matrix = np.full((height, width), -1, dtype=np.int32)
     for y in range(height):
         for x in range(width):
