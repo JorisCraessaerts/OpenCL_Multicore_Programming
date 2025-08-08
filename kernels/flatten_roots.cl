@@ -1,4 +1,3 @@
-// Veilige flatten_roots.cl met path compression
 __kernel void flatten_roots(__global int* parent,
                             __global int* labels,
                             const int num_pixels) {
@@ -11,20 +10,19 @@ __kernel void flatten_roots(__global int* parent,
         return;
     }
 
-    // Stap 1: Vind de uiteindelijke root met een veilige lus
+    // 1) Vind de uiteindelijke root
     int root = current_pixel;
     while (parent[root] != root && parent[root] != -1) {
         root = parent[root];
     }
     
-    // Als de keten naar een achtergrondpixel leidde, markeer als achtergrond.
+    // Als root een achtergrondpixel zou zijn, zet dan ook de label van deze pixel naar die van een achtergrondpixel
     if (root == -1) {
         labels[current_pixel] = -1;
         return;
     }
 
-    // Stap 2: Pas path compression toe. Dit is hier veilig, want elke thread
-    // bewerkt alleen de keten die bij zijn EIGEN unieke 'gid' hoort.
+    // 2) Pas path compression toe. Pixels kunnen wel buiten hun tile grenzen gaan, maar dit vormt geen probleem zolang men met global memory werkt. Wanneer men met local memory werkt, geeft dit problemen. Nog geen oplossing voor gevonden.
     int temp_pixel = current_pixel;
     while (parent[temp_pixel] != root) {
         int old_parent = parent[temp_pixel];

@@ -4,9 +4,5 @@ __kernel void initialize_union(__global int* mask,
     int gid = get_global_id(0);
     if (gid >= size) return;
 
-    if (mask[gid] == -1) {
-        parent[gid] = -1;
-    } else {
-        parent[gid] = gid;
-    }
+    parent[gid] = select(gid, -1, mask[gid] == -1);
 }
