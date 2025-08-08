@@ -1,6 +1,5 @@
 import time
 from PIL import Image
-import argparse
 import numpy as np
 import pyopencl as cl
 import os
@@ -102,7 +101,7 @@ def matrix_to_svg(matrix, filename):
 
 
 
-def union_find_tiled(image, tile_size, workgroup_size):    
+def union_find_tiled(image, tile_size):    
     height, width, channels = image.shape
 
     if channels == 3:
@@ -120,53 +119,46 @@ def union_find_tiled(image, tile_size, workgroup_size):
     mf = cl.mem_flags
 
     # Buffers
-    img_buf     = cl.Buffer(context, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=img_flat)
-    mask_buf    = cl.Buffer(context, mf.READ_WRITE, size=4 * num_pixels)
-    parent_buf  = cl.Buffer(context, mf.READ_WRITE, size=4 * num_pixels)
-    rank_buf    = cl.Buffer(context, mf.READ_WRITE, size=4 * num_pixels)
-    label_buf   = cl.Buffer(context, mf.WRITE_ONLY, size=4 * num_pixels)
-    changes_buf = cl.Buffer(context, mf.READ_WRITE, size=4)
+    img_buf     = cl.Buffer(context, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=img_flat) #inputafbeelding
+    mask_buf    = cl.Buffer(context, mf.READ_WRITE, size=4 * num_pixels) # buffer voor de mask die voor elke pixel -1 of het pixelid bevat
+    parent_buf  = cl.Buffer(context, mf.READ_WRITE, size=4 * num_pixels) # Houdt bij naar welke parent een pixel verwijst.
+    label_buf   = cl.Buffer(context, mf.WRITE_ONLY, size=4 * num_pixels) # Bevat de uiteindelijke root van een pixel
+    changes_buf = cl.Buffer(context, mf.READ_WRITE, size=4) # Houdt bij of er tijdens de iteratie wijzigingen zijn gebeurt. Dit gebruiken we om na te gaan of we outer while loop nog eens moeten oproepen om verder te joinen.
 
+    # Helpermethodetje om een kernel te builden
     def build_kernel(fname):
         with open(os.path.join("kernels", fname)) as f:
             return cl.Program(context, f.read()).build()
 
-    # -------- KERNEL 1: threshold_mask --------
+    # Kernel threshold_mask.cl
     build_kernel("threshold_mask.cl").threshold_mask(
         queue, (width, height), None,
         img_buf, mask_buf, np.int32(width), np.int32(height), np.int32(THRESHOLD)
     )
 
-    # -------- KERNEL 2: initialize_union --------
+    # Kernel initialize_union.cl
     build_kernel("initialize_union_data.cl").initialize_union(
         queue, (num_pixels,), None,
-        mask_buf, parent_buf, rank_buf, np.int32(num_pixels)
+        mask_buf, parent_buf, np.int32(num_pixels)
     )
 
-    # Jouw originele kernel variabelen
     kernel_union_within_tile = build_kernel("union_within_tile.cl")
     kernel_union_horizontal_borders = build_kernel("union_horizontal_borders.cl")
     kernel_union_vertical_borders = build_kernel("union_vertical_borders.cl")
 
-    # --- NOODZAKELIJKE AANPASSING VOOR WORKGROUP_SIZE ---
-    # Bereken de opgevulde globale grootte om crashes te voorkomen.
-    wgs_x, wgs_y = workgroup_size
-    g_width = (width + wgs_x - 1) // wgs_x * wgs_x
-    g_height = (height + wgs_y - 1) // wgs_y * wgs_y
-    global_work_shape_2d = (g_width, g_height)
     
-    # -------- ITERATIEVE UNION --------
+    # Iteratieve union join totdat er geen wijzigingen meer gedetcteerd worden.
     while True:
         cl.enqueue_copy(queue, changes_buf, np.zeros(1, dtype=np.int32))
 
-        # Stap 1: Verbind pixels BINNEN de tiles met de meegegeven workgroup_size
+        # Union find binnenin een tile
         kernel_union_within_tile.union_within_tile(
-            queue, global_work_shape_2d, workgroup_size,
+            queue, (width, height), None,
             mask_buf, parent_buf, np.int32(width), np.int32(height),
             np.int32(tile_size), changes_buf
         )
 
-        # Stap 2: Grens-kernels blijven ongewijzigd, zoals je vroeg
+        # Nu doen we de union tussen de verschillende tiles op de randen (verticaal en horizontaal langs de randen van de tiles)
         kernel_union_horizontal_borders.union_horizontal_borders(
             queue, (width, height), None,
             mask_buf, parent_buf, np.int32(width), np.int32(height),
@@ -185,13 +177,13 @@ def union_find_tiled(image, tile_size, workgroup_size):
         if host_changes[0] == 0:
             break
             
-    # -------- KERNEL 6: flatten_roots (na de lus) --------
+    # Kernel flatten_roots.cl
     build_kernel("flatten_roots.cl").flatten_roots(
         queue, (num_pixels,), None,
         parent_buf, label_buf, np.int32(num_pixels)
     )
 
-    # Kopieer naar host
+    # Resultaten terug naar host kopiëren zodat we deze kunnen uitlezen.
     label_host = np.empty(num_pixels, dtype=np.int32)
     cl.enqueue_copy(queue, label_host, label_buf)
     queue.finish()
@@ -204,14 +196,14 @@ def main():
     # De tile sizes maken niet uit aangezien de gegevens van een tile niet naar local memory worden gekopieerd en men dus op global memory blijft werken.
     # Hierdoor zal de tile grootte niet uitmaken omdat men dus nooit meer gegevens naar local memory zal kopiëren bij een hogere tile size en er dus ook geen snellere geheugenacces is.
     # Het programma is memory bound
-    for tile_size in [4, 8, 16, 32, 64]:
+    for tile_size in [4]:#, 8, 16, 32, 64]:
         print(f"Threshold: {THRESHOLD}")
 
         for image_path in IMAGES:
             image_name = image_path.rsplit("/", maxsplit=1)[-1].split(".")[0]
             output_file = f"2_1_{image_name}_tilsize_{tile_size}_.txt"
             with open(output_file, "w") as f_out:
-                runs = range(50)
+                runs = range(1)
                 for run in runs:
                     print()
                     print(f"Image: {image_name} ({image_path})")

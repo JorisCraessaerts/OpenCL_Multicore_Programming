@@ -1,6 +1,5 @@
 import time
 from PIL import Image
-import argparse
 import numpy as np
 import pyopencl as cl
 import os
@@ -117,29 +116,33 @@ def union_find_tiled(image, tile_size, workgroup_size):
     queue = cl.CommandQueue(context, properties=cl.command_queue_properties.PROFILING_ENABLE)
     mf = cl.mem_flags
 
-    # --- (Buffer creatie en initiële kernel compilatie blijven hetzelfde) ---
+    # Buffers
     img_buf = cl.Buffer(context, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=img_flat)
     mask_buf = cl.Buffer(context, mf.READ_WRITE, size=4 * num_pixels)
     parent_buf = cl.Buffer(context, mf.READ_WRITE, size=4 * num_pixels)
-    rank_buf = cl.Buffer(context, mf.READ_WRITE, size=4 * num_pixels)
     label_buf = cl.Buffer(context, mf.WRITE_ONLY, size=4 * num_pixels)
     changes_buf = cl.Buffer(context, mf.READ_WRITE, size=4)
+    
+    # Helpermethodetje om een kernel te builden
     def build_kernel(fname):
         with open(os.path.join("kernels", fname)) as f:
             return cl.Program(context, f.read()).build()
+        
+    build_kernel("threshold_mask.cl").threshold_mask(queue, (width, height), None, img_buf, mask_buf, np.int32(width), np.int32(height), np.int32(THRESHOLD))
+    build_kernel("initialize_union_data.cl").initialize_union(queue, (num_pixels,), None, mask_buf, parent_buf, np.int32(num_pixels))
+
     kernel_union_within_tile = build_kernel("union_within_tile.cl")
     kernel_union_horizontal_borders = build_kernel("union_horizontal_borders.cl")
     kernel_union_vertical_borders = build_kernel("union_vertical_borders.cl")
-    build_kernel("threshold_mask.cl").threshold_mask(queue, (width, height), None, img_buf, mask_buf, np.int32(width), np.int32(height), np.int32(THRESHOLD))
-    build_kernel("initialize_union_data.cl").initialize_union(queue, (num_pixels,), None, mask_buf, parent_buf, rank_buf, np.int32(num_pixels))
 
-    # Padding voor de union_within_tile kernel
-    wgs_x, wgs_y = workgroup_size
-    g_width_padded = (width + wgs_x - 1) // wgs_x * wgs_x
-    g_height_padded = (height + wgs_y - 1) // wgs_y * wgs_y
+    # De globale grootte moet een veelvoud zijn van de workgroup size, dus hier voeg ik padding toe indien nodig.
+    # Nodig om te voorkomen dat er out of bounds errors zijn. We voegen gewoon extra 'dummy pixels' toe om tot een correct veelvoud te komen van de workgroup size.
+    workgroupsize_x, workgroupsize_y = workgroup_size
+    g_width_padded = (width + workgroupsize_x - 1) // workgroupsize_x * workgroupsize_x
+    g_height_padded = (height + workgroupsize_y - 1) // workgroupsize_y * workgroupsize_y
     global_work_shape_2d_main = (g_width_padded, g_height_padded)
     
-    # -------- ITERATIEVE UNION --------
+    # Iteratieve union join totdat er geen wijzigingen meer gedetcteerd worden.
     while True:
         cl.enqueue_copy(queue, changes_buf, np.zeros(1, dtype=np.int32))
 
@@ -149,15 +152,14 @@ def union_find_tiled(image, tile_size, workgroup_size):
             np.int32(tile_size), changes_buf
         )
         
-        # --- CORRECTIE VOOR DE GRENS-KERNELS ---
         border_rows = (height - 1) // tile_size
         if border_rows > 0:
             # Pad de 'width' dimensie voor de horizontale grens-kernel
-            padded_width = (width + wgs_x - 1) // wgs_x * wgs_x
+            padded_width = (width + workgroupsize_x - 1) // workgroupsize_x * workgroupsize_x
             horizontal_shape = (padded_width, border_rows)
-            horizontal_wgs = (wgs_x, 1) # Gebruik een 1D-achtige workgroup
+            horizontal_workgroupsize = (workgroupsize_x, 1)
             kernel_union_horizontal_borders.union_horizontal_borders(
-                queue, horizontal_shape, horizontal_wgs,
+                queue, horizontal_shape, horizontal_workgroupsize,
                 mask_buf, parent_buf, np.int32(width), np.int32(height),
                 np.int32(tile_size), changes_buf
             )
@@ -165,11 +167,11 @@ def union_find_tiled(image, tile_size, workgroup_size):
         border_cols = (width - 1) // tile_size
         if border_cols > 0:
             # Pad de 'height' dimensie voor de verticale grens-kernel
-            padded_height = (height + wgs_y - 1) // wgs_y * wgs_y
+            padded_height = (height + workgroupsize_y - 1) // workgroupsize_y * workgroupsize_y
             vertical_shape = (border_cols, padded_height)
-            vertical_wgs = (1, wgs_y) # Gebruik een 1D-achtige workgroup
+            vertical_workgroupsize = (1, workgroupsize_y)
             kernel_union_vertical_borders.union_vertical_borders(
-                queue, vertical_shape, vertical_wgs,
+                queue, vertical_shape, vertical_workgroupsize,
                 mask_buf, parent_buf, np.int32(width), np.int32(height),
                 np.int32(tile_size), changes_buf
             )
@@ -195,7 +197,7 @@ def union_find_tiled(image, tile_size, workgroup_size):
 def main():
     # Workgroup size doet niet veel. Het programma is vooral memory bound. We kunnen wel grotere of kleinere workgroups maken, maar aangezien
     # we geen local memory gebruiken zal de impact hiervan heel beperkt zijn.
-    work_group_sizes_to_test = [(8, 8), (16, 8), (16, 16), (32, 16), (32, 32)]
+    work_group_sizes_to_test = [(8, 8)]#, (16, 8), (16, 16), (32, 16), (32, 32)]
     
     for work_group_size in work_group_sizes_to_test:
         wgs_str = f"{work_group_size[0]}x{work_group_size[1]}"
@@ -205,7 +207,7 @@ def main():
             image_name = image_path.rsplit("/", maxsplit=1)[-1].split(".")[0]
             output_file = f"perf_{image_name}_wgs_{wgs_str}_.txt"
             with open(output_file, "w") as f_out:
-                runs = range(30)
+                runs = range(1)
                 for run in runs:
                     print()
                     print(f"Image: {image_name} ({image_path})")
