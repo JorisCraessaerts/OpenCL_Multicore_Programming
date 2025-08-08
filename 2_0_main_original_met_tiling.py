@@ -336,34 +336,32 @@ def tiled_union_find(mask_matrix, tile_size=16):
                                 if (ny // tile_size, nx // tile_size) == (y // tile_size, x // tile_size):
                                     changed |= union(index(y, x), index(ny, nx))
 
-        # Step 3: Vertical borders
-        for tile_y in range(1, height // tile_size):
-            for x in range(width):
-                y1 = tile_y * tile_size - 1
-                y2 = tile_y * tile_size
-                if mask_matrix[y1, x] != -1 and mask_matrix[y2, x] != -1:
-                    changed |= union(index(y1, x), index(y2, x))
+        # De union over de horizontale grenzen. We gaan horizontaal tussen de tiles lopen en de pixels van de upper en lower tile joinen indien ze overeen komen (verticaal, diagonaal)
+        for tile_y in range(1, (height + tile_size - 1) // tile_size):
+            y1 = tile_y * tile_size - 1
+            y2 = tile_y * tile_size
+            if y1 >= height or y2 >= height: continue
 
-        # Step 4: Horizontal borders
-        for tile_x in range(1, width // tile_size):
+            for x in range(width):
+                # Controleer de 3 buren in de rij eronder (links-diagonaal, recht onder, rechts-diagonaal)
+                for dx in [-1, 0, 1]:
+                    nx = x + dx
+                    # Zorg ervoor dat de buur binnen de afbeelding valt
+                    if 0 <= nx < width:
+                        if mask_matrix[y1, x] != -1 and mask_matrix[y2, nx] != -1:
+                            changed |= union(index(y1, x), index(y2, nx))
+
+        # De union over de verticale grenzen tussen de tiles. We gaan verticaal tussen de tiles lopen en de pixels van de linker en rechter tile joinen indien ze overeen komen (horizontaal, diagonaal)
+        for tile_x in range(1, (width + tile_size - 1) // tile_size):
+            x1 = tile_x * tile_size - 1
+            x2 = tile_x * tile_size
+            if x1 >= width or x2 >= width: continue
+
             for y in range(height):
-                x1 = tile_x * tile_size - 1
-                x2 = tile_x * tile_size
+                # Controleer enkel de directe buur rechts. De diagonale verbindingen
+                # zijn al gedekt door de lus hierboven.
                 if mask_matrix[y, x1] != -1 and mask_matrix[y, x2] != -1:
                     changed |= union(index(y, x1), index(y, x2))
-
-        # Step 5: Diagonal borders
-        for tile_y in range(1, height // tile_size):
-            for tile_x in range(1, width // tile_size):
-                y, x = tile_y * tile_size - 1, tile_x * tile_size - 1
-                # ↘
-                if y + 1 < height and x + 1 < width and \
-                   mask_matrix[y, x] != -1 and mask_matrix[y+1, x+1] != -1:
-                    changed |= union(index(y, x), index(y+1, x+1))
-                # ↙
-                if y + 1 < height and x - 1 >= 0 and \
-                   mask_matrix[y, x] != -1 and mask_matrix[y+1, x-1] != -1:
-                    changed |= union(index(y, x), index(y+1, x-1))
 
     # Step 6: Flatten roots
     label_matrix = np.full((height, width), -1, dtype=np.int32)

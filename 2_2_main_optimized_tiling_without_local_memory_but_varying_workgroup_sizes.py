@@ -197,7 +197,7 @@ def union_find_tiled(image, tile_size, workgroup_size):
 def main():
     # Workgroup size doet niet veel. Het programma is vooral memory bound. We kunnen wel grotere of kleinere workgroups maken, maar aangezien
     # we geen local memory gebruiken zal de impact hiervan heel beperkt zijn.
-    work_group_sizes_to_test = [(8, 8) (16, 8), (16, 16), (32, 16), (32, 32)]
+    work_group_sizes_to_test = [(8, 8), (16, 8), (16, 16), (32, 16), (32, 32)]
     
     for work_group_size in work_group_sizes_to_test:
         wgs_str = f"{work_group_size[0]}x{work_group_size[1]}"
