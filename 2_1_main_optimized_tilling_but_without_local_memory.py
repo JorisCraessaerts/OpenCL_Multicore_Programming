@@ -46,6 +46,62 @@ def is_part_of_cell(pixel):
     return pixel_brightness(pixel) < THRESHOLD
 
 
+def highlight_cells(cell_numbers):
+    """Generate an image with the cells highlighted.
+
+    This is not needed for the algorithm, but can be useful for debugging."""
+    height, width = cell_numbers.shape
+    cell_count = cell_numbers.max() + 2
+    # +2 because the background is -1, and we want to include the last cell
+    # number in the range.
+
+    # Set random seed to get the same colors each time
+    np.random.seed(0)
+
+    # Generate a random color for each cell.
+    # This is an matrix of shape (cell_count, 3), where each row is a color.
+    # E.g. colors[123] is the RGB color for cell 123.
+    # We use colors from 0 to 200 to avoid very light colors (close to white).
+    colors = np.random.randint(0, 200, (cell_count, 3), dtype=np.uint8)
+    # Cell number -1 is reserved for background pixels that are not part of a
+    # cell: make these pixels white.
+    colors[-1] = [255, 255, 255]
+
+    # Create an image to store the result
+    result = np.zeros((height, width, 3), dtype=np.uint8)
+
+    # Assign a color to each pixel based on the cell number
+    for row in range(height):
+        for col in range(width):
+            result[row, col] = colors[cell_numbers[row, col]]
+    return result
+
+
+def matrix_to_svg(matrix, filename):
+    """Convert a matrix of numbers to an SVG file.
+
+    This is for the purposes of debugging. I used this to generate SVG files
+    for the assignment. Note that this will only work for small images,
+    otherwise the SVG file becomes too large.
+    """
+    height, width = matrix.shape
+    with open(filename, "w", encoding="utf-8") as f:
+        f.write(
+            f'<svg xmlns="http://www.w3.org/2000/svg" width="400" height="200" viewBox="0 0 {width} {height}">\n'
+        )
+        f.write(
+            "<style>\nrect { fill: black; }\ntext { fill: white; font-size: 0.5px; text-anchor: middle; dominant-baseline: middle; }\n</style>\n"
+        )
+        for row in range(height):
+            for col in range(width):
+                if matrix[row, col] == -1:
+                    continue
+                f.write(f'<rect x="{col}" y="{row}" width="1" height="1" />\n')
+                f.write(f'<text x="{col}.5" y="{row}.5">{matrix[row, col]}</text>\n')
+        f.write("</svg>\n")
+
+
+
 def union_find_tiled(image, tile_size, workgroup_size):    
     height, width, channels = image.shape
 
@@ -144,80 +200,11 @@ def union_find_tiled(image, tile_size, workgroup_size):
     return label_matrix, context, queue
 
 
-
-def highlight_cells(cell_numbers):
-    """Generate an image with the cells highlighted.
-
-    This is not needed for the algorithm, but can be useful for debugging."""
-    height, width = cell_numbers.shape
-    cell_count = cell_numbers.max() + 2
-    # +2 because the background is -1, and we want to include the last cell
-    # number in the range.
-
-    # Set random seed to get the same colors each time
-    np.random.seed(0)
-
-    # Generate a random color for each cell.
-    # This is an matrix of shape (cell_count, 3), where each row is a color.
-    # E.g. colors[123] is the RGB color for cell 123.
-    # We use colors from 0 to 200 to avoid very light colors (close to white).
-    colors = np.random.randint(0, 200, (cell_count, 3), dtype=np.uint8)
-    # Cell number -1 is reserved for background pixels that are not part of a
-    # cell: make these pixels white.
-    colors[-1] = [255, 255, 255]
-
-    # Create an image to store the result
-    result = np.zeros((height, width, 3), dtype=np.uint8)
-
-    # Assign a color to each pixel based on the cell number
-    for row in range(height):
-        for col in range(width):
-            result[row, col] = colors[cell_numbers[row, col]]
-    return result
-
-
-def matrix_to_svg(matrix, filename):
-    """Convert a matrix of numbers to an SVG file.
-
-    This is for the purposes of debugging. I used this to generate SVG files
-    for the assignment. Note that this will only work for small images,
-    otherwise the SVG file becomes too large.
-    """
-    height, width = matrix.shape
-    with open(filename, "w", encoding="utf-8") as f:
-        f.write(
-            f'<svg xmlns="http://www.w3.org/2000/svg" width="400" height="200" viewBox="0 0 {width} {height}">\n'
-        )
-        f.write(
-            "<style>\nrect { fill: black; }\ntext { fill: white; font-size: 0.5px; text-anchor: middle; dominant-baseline: middle; }\n</style>\n"
-        )
-        for row in range(height):
-            for col in range(width):
-                if matrix[row, col] == -1:
-                    continue
-                f.write(f'<rect x="{col}" y="{row}" width="1" height="1" />\n')
-                f.write(f'<text x="{col}.5" y="{row}.5">{matrix[row, col]}</text>\n')
-        f.write("</svg>\n")
-
-def parse_args():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--runs", type=int, default=1, help="Aantal benchmark runs")
-    parser.add_argument("--tilesize", type=int, default=16, help="Tile size (optioneel)")
-    parser.add_argument("--workgroupsize", type=str, help="bv. 16x16 (optioneel)")
-    parser.add_argument("--output", type=str, required=True, help="Output bestand om runtimes te loggen")
-    return parser.parse_args()
-
-def parse_workgroup_size(s):
-    if s is None:
-        return None
-    parts = s.lower().split("x")
-    return tuple(int(p) for p in parts)
-
-
 def main():
     # De tile sizes maken niet uit aangezien de gegevens van een tile niet naar local memory worden gekopieerd en men dus op global memory blijft werken.
     # Hierdoor zal de tile grootte niet uitmaken omdat men dus nooit meer gegevens naar local memory zal kopiëren bij een hogere tile size en er dus ook geen snellere geheugenacces is.
-    for tile_size in [4, 8, 16, 32, 64, 128, 256, 512, 1024]:
+    # Het programma is memory bound
+    for tile_size in [4, 8, 16, 32, 64]:
         print(f"Threshold: {THRESHOLD}")
 
         for image_path in IMAGES:
