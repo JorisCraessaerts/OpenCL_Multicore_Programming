@@ -232,7 +232,7 @@ def main():
     #     ((128, 64), (1024,))
     # ]
 
-    for tile_size in [4, 8, 16, 32, 64, 128]:
+    for tile_size in [4, 8, 16, 32, 64, 128, 256, 512, 1024]:
         print(f"Threshold: {THRESHOLD}")
 
         for image_path in IMAGES:
